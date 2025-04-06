@@ -1,4 +1,4 @@
-import { View, Text, Button, Alert, TextInput, ActivityIndicator, StyleSheet, Image } from "react-native";
+import { View, Text, Alert, TextInput, ActivityIndicator, StyleSheet, Image, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -75,13 +75,12 @@ export default function HomeScreen() {
               placeholder="Contraseña"
               onChangeText={setPassword}
             />
-          <View style={{ backgroundColor: "#1976d2", borderRadius: 5 }}>
-            <Button 
-              title="Acceder" 
-              color="#ffffff" 
-              onPress={submit} 
-            />
-          </View>
+          <TouchableOpacity 
+            style={styles.button}
+            onPress={submit}
+          >
+            <Text style={styles.buttonText}>Acceder</Text>
+          </TouchableOpacity>
              <ActivityIndicator
                     animating={loading}
                     size="large"
@@ -99,4 +98,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     width: 200,
   },
+  button: {
+    backgroundColor: "#1976d2",
+    borderRadius: 5,
+    padding: 10,
+    paddingHorizontal: 20,
+  },
+  buttonText: {
+    color: "#ffffff",
+    fontWeight: "bold",
+    textAlign: "center",
+  }
 });

@@ -36,7 +36,7 @@ const Tickets = () => {
         
         // Hacer la petición a la API para obtener los tickets asignados
         const ticketsResponse = await axios.request({
-          url: `${page}/api/arsys/v1/entry/HPD:Help%20Desk?q=%27Assigned%20Group%20ID%27%3D%22${groupId}%22%20AND%20%27Assignee%20Login%20ID%27%3D%22${storedUsername}%22`,
+          url: `${page}/api/arsys/v1/entry/HPD:Help%20Desk?q=%27Assigned%20Group%20ID%27%3D%22${groupId}%22%20AND%20%27Assignee%20Login%20ID%27%3D%22${storedUsername}%22%20AND%27Status%27!%3D%22Resolved%22%20AND%20%27Status%27!%3D%22Closed%22%20AND%20%27Status%27!%3D%22Cancelled%22`,
           method: "GET",
           headers: headersList,
         });
@@ -61,7 +61,7 @@ const Tickets = () => {
         
         // Hacer la petición a la API para obtener las órdenes de trabajo
         const workOrdersResponse = await axios.request({
-          url: `${page}/api/arsys/v1/entry/WOI:WorkOrder?q=%27Support%20Group%20ID%27%3D%22${groupId}%22%20AND%20%27ASLOGID%27%3D%22${storedUsername}%22`,
+          url: `${page}/api/arsys/v1/entry/WOI:WorkOrder?q=%27ASGRPID%27%3D%22${groupId}%22%20AND%20%27ASLOGID%27%3D%22${storedUsername}%22%20AND%27Status%27!%3D%22Completed%22%20AND%20%27Status%27!%3D%22Rejected%22%20AND%20%27Status%27!%3D%22Cancelled%22`,
           method: "GET",
           headers: headersList,
         });
@@ -169,7 +169,7 @@ const Tickets = () => {
           sections={sections}
           renderItem={renderTicketItem}
           renderSectionHeader={renderSectionHeader}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => `${item.type}-${item.id}-${index}`}
           style={styles.ticketsList}
         />
       ) : (

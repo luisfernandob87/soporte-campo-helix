@@ -27,7 +27,9 @@ const DetalleTickets = () => {
   const [etapaActual, setEtapaActual] = useState<number>(1); // 1: Saliendo a sitio, 2: En sitio, 3: Soporte finalizado, 4: Resolución
   
   // Clave para almacenar el progreso en AsyncStorage
-  const getStorageKey = () => `incidente_progreso_${params.incidentNumber}`;
+  const getStorageKey = () => params.type === "ticket" 
+    ? `incidente_progreso_${params.incidentNumber}` 
+    : `orden_progreso_${params.incidentNumber}`;
   
   useEffect(() => {
     (async () => {
@@ -60,7 +62,7 @@ const DetalleTickets = () => {
     }
   };
 
-  // Función para cargar el progreso guardado y consultar WorkLog
+  // Función para cargar el progreso guardado y consultar WorkLog o WorkInfo
   const cargarProgresoYWorkLog = async () => {
     setLoading(true);
     try {
@@ -74,7 +76,7 @@ const DetalleTickets = () => {
         console.log("Progreso cargado desde AsyncStorage:", progreso);
       }
       
-      // Luego consultamos la API de WorkLog para verificar el estado actual
+      // Luego consultamos la API correspondiente para verificar el estado actual
       const token = await AsyncStorage.getItem("token");
       
       if (!token) {
@@ -88,21 +90,34 @@ const DetalleTickets = () => {
         "Authorization": `AR-JWT ${token}`
       };
       
-      // Consultar los WorkLogs existentes
-      const response = await axios.request({
-        url: `${page}/api/arsys/v1/entry/HPD:WorkLog?q=%27Incident%20Number%27%3D%22${params.incidentNumber}%22`,
-        method: "GET",
-        headers: headersList,
-      });
+      let response;
       
-      console.log("Respuesta API WorkLog:", JSON.stringify(response.data));
+      if (params.type === "ticket") {
+        // Consultar los WorkLogs existentes para tickets
+        response = await axios.request({
+          url: `${page}/api/arsys/v1/entry/HPD:WorkLog?q=%27Incident%20Number%27%3D%22${params.incidentNumber}%22`,
+          method: "GET",
+          headers: headersList,
+        });
+        
+        console.log("Respuesta API WorkLog:", JSON.stringify(response.data));
+      } else {
+        // Consultar los WorkInfo existentes para órdenes de trabajo
+        response = await axios.request({
+          url: `${page}/api/arsys/v1/entry/WOI:WorkInfo?q=%27Work%20Order%20ID%27%3D%22${params.incidentNumber}%22`,
+          method: "GET",
+          headers: headersList,
+        });
+        
+        console.log("Respuesta API WorkInfo:", JSON.stringify(response.data));
+      }
       
-      // Analizar los WorkLogs para determinar la etapa actual
+      // Analizar las entradas para determinar la etapa actual
       if (response.data && response.data.entries && response.data.entries.length > 0) {
         let ultimaEtapa = 1;
         let ultimoEstado = "";
         
-        // Recorremos todos los WorkLogs para encontrar el último estado registrado
+        // Recorremos todas las entradas para encontrar el último estado registrado
         response.data.entries.forEach((entry: any) => {
           const descripcion = entry.values["Detailed Description"] || "";
           
@@ -185,20 +200,39 @@ const DetalleTickets = () => {
         "Content-Type": "application/json" 
       };
       
-      // Preparar el cuerpo de la petición
-      let bodyContent = JSON.stringify({
-        "values": {
-          "Incident Number": params.incidentNumber,
-          "Work Log Type": "Customer Communication",
-          "Detailed Description": descripcion,
-          "Secure Work Log": "No",
-          "View Access": "Public"
-        }
-      });
+      let bodyContent;
+      let url;
+      
+      if (params.type === "ticket") {
+        // Preparar el cuerpo de la petición para tickets
+        bodyContent = JSON.stringify({
+          "values": {
+            "Incident Number": params.incidentNumber,
+            "Work Log Type": "Customer Communication",
+            "Detailed Description": descripcion,
+            "Secure Work Log": "No",
+            "View Access": "Public"
+          }
+        });
+        
+        url = `${page}/api/arsys/v1/entry/HPD:WorkLog`;
+      } else {
+        // Preparar el cuerpo de la petición para órdenes de trabajo
+        bodyContent = JSON.stringify({
+          "values": {
+            "Work Order ID": params.incidentNumber,
+            "Detailed Description": descripcion,
+            "Short Description": `Actualización: ${nuevoEstado}`,
+            "View Access": "Public"
+          }
+        });
+        
+        url = `${page}/api/arsys/v1/entry/WOI:WorkInfo`;
+      }
       
       // Realizar la petición a la API
       const response = await axios.request({
-        url: `${page}/api/arsys/v1/entry/HPD:WorkLog`,
+        url: url,
         method: "POST",
         headers: headersList,
         data: bodyContent,
@@ -252,26 +286,136 @@ const DetalleTickets = () => {
         "Content-Type": "application/json" 
       };
       
-      // Preparar el cuerpo de la petición
-      let bodyContent = JSON.stringify({
-        "values": {
-          "Incident Number": params.incidentNumber,
-          "Work Log Type": "Customer Communication",
-          "Detailed Description": `Resolución: ${resolucion}`,
-          "Secure Work Log": "No",
-          "View Access": "Public"
-        }
-      });
+      let bodyContent;
+      let url;
+      
+      if (params.type === "ticket") {
+        // Preparar el cuerpo de la petición para tickets
+        bodyContent = JSON.stringify({
+          "values": {
+            "Incident Number": params.incidentNumber,
+            "Work Log Type": "Customer Communication",
+            "Detailed Description": `Resolución: ${resolucion}`,
+            "Secure Work Log": "No",
+            "View Access": "Public"
+          }
+        });
+        
+        url = `${page}/api/arsys/v1/entry/HPD:WorkLog`;
+      } else {
+        // Preparar el cuerpo de la petición para órdenes de trabajo
+        bodyContent = JSON.stringify({
+          "values": {
+            "Work Order ID": params.incidentNumber,
+            "Detailed Description": `Resolución: ${resolucion}`,
+            "Short Description": "Resolución del caso",
+            "View Access": "Public"
+          }
+        });
+        
+        url = `${page}/api/arsys/v1/entry/WOI:WorkInfo`;
+      }
       
       // Realizar la petición a la API
       const response = await axios.request({
-        url: `${page}/api/arsys/v1/entry/HPD:WorkLog`,
+        url: url,
         method: "POST",
         headers: headersList,
         data: bodyContent,
       });
       
       console.log("Respuesta API Resolución:", response.data);
+      
+      // Actualizar el estado según el tipo (ticket o work order)
+      if (params.type === "ticket") {
+        try {
+          // 1. Primero consultar el Entry ID del incidente
+          const incidentResponse = await axios.request({
+            url: `${page}/api/arsys/v1/entry/HPD:Help%20Desk?q=%27Incident%20Number%27%3D%22${params.incidentNumber}%22`,
+            method: "GET",
+            headers: headersList,
+          });
+          
+          console.log("Respuesta API Incidente:", JSON.stringify(incidentResponse.data));
+          
+          // Verificar si se encontró el incidente y obtener su Entry ID
+          if (incidentResponse.data && 
+              incidentResponse.data.entries && 
+              incidentResponse.data.entries.length > 0) {
+            
+            const entryId = incidentResponse.data.entries[0].values["Entry ID"];
+            
+            if (entryId) {
+              // 2. Actualizar el estado del incidente a Resolved
+              const updateResponse = await axios.request({
+                url: `${page}/api/arsys/v1/entry/HPD:Help%20Desk/${entryId}`,
+                method: "PUT",
+                headers: headersList,
+                data: JSON.stringify({
+                  "values": {
+                    "Status": "Resolved",
+                    "Resolution": resolucion,
+                    "Status_Reason": "Automated Resolution Reported"
+                  }
+                })
+              });
+              
+              console.log("Respuesta API Actualización Estado Incidente:", JSON.stringify(updateResponse.data));
+            } else {
+              console.error("No se pudo obtener el Entry ID del incidente");
+            }
+          } else {
+            console.error("No se encontró el incidente");
+          }
+        } catch (updateError) {
+          console.error("Error al actualizar estado del incidente:", updateError);
+          // No interrumpimos el flujo principal si esta parte falla
+        }
+      } else {
+        // Si es una orden de trabajo, actualizar su estado a Completed
+        try {
+          // 1. Primero consultar el Request ID de la orden de trabajo
+          const workOrderResponse = await axios.request({
+            url: `${page}/api/arsys/v1/entry/WOI:WorkOrder?q=%27Work%20Order%20ID%27%3D%22${params.incidentNumber}%22`,
+            method: "GET",
+            headers: headersList,
+          });
+          
+          console.log("Respuesta API Orden de Trabajo:", JSON.stringify(workOrderResponse.data));
+          
+          // Verificar si se encontró la orden de trabajo y obtener su Request ID
+          if (workOrderResponse.data && 
+              workOrderResponse.data.entries && 
+              workOrderResponse.data.entries.length > 0) {
+            
+            const requestId = workOrderResponse.data.entries[0].values["Request ID"];
+            
+            if (requestId) {
+              // 2. Actualizar el estado de la orden de trabajo a Completed
+              const updateResponse = await axios.request({
+                url: `${page}/api/arsys/v1/entry/WOI:WorkOrder/${requestId}`,
+                method: "PUT",
+                headers: headersList,
+                data: JSON.stringify({
+                  "values": {
+                    "Status": "Completed",
+                    "chr_Resolution": resolucion
+                  }
+                })
+              });
+              
+              console.log("Respuesta API Actualización Estado Orden de Trabajo:", JSON.stringify(updateResponse.data));
+            } else {
+              console.error("No se pudo obtener el Request ID de la orden de trabajo");
+            }
+          } else {
+            console.error("No se encontró la orden de trabajo");
+          }
+        } catch (updateError) {
+          console.error("Error al actualizar estado de la orden de trabajo:", updateError);
+          // No interrumpimos el flujo principal si esta parte falla
+        }
+      }
       
       // Marcar como completado en AsyncStorage
       await guardarProgreso(5, "Resolución completada");
