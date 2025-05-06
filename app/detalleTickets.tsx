@@ -168,9 +168,71 @@ const DetalleTickets = () => {
   };
   
   // Función para manejar el cambio de estado
+  const actualizarUbicacionUsuario = async () => {
+    try {
+      // Obtener el nombre de usuario almacenado
+      const storedUsername = await AsyncStorage.getItem('username');
+      if (!storedUsername) {
+        console.error('No se encontró el nombre de usuario almacenado');
+        return;
+      }
+
+      // Obtener la lista de usuarios del backend
+      const backendUsers = await axios.get('https://backend-soporte-campo-vpc.onrender.com/usuarios');
+      if (!Array.isArray(backendUsers.data)) {
+        console.error('Error: La respuesta del backend no es un array', backendUsers.data);
+        return;
+      }
+
+      // Buscar el usuario en la lista
+      const existingUser = backendUsers.data.find((user) => user.usuario === storedUsername);
+      if (!existingUser) {
+        console.error('Usuario no encontrado en el backend');
+        return;
+      }
+
+      // Obtener el ID del usuario
+      const userId = existingUser.usuario_id || existingUser.id || existingUser._id;
+      if (!userId) {
+        console.error('Error: Usuario existente no tiene ID válido', existingUser);
+        return;
+      }
+
+      // Solicitar permisos de ubicación
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('Permiso de ubicación denegado');
+        return;
+      }
+
+      // Obtener la ubicación actual
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High
+      });
+
+      // Actualizar la ubicación en el backend
+      const updateUrl = `https://backend-soporte-campo-vpc.onrender.com/usuario/${userId}`;
+      await axios.put(updateUrl, {
+        latitud: location.coords.latitude,
+        longitud: location.coords.longitude
+      }, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      console.log('Ubicación actualizada exitosamente');
+    } catch (error) {
+      console.error('Error al actualizar ubicación:', error);
+    }
+  };
+
   const cambiarEstado = async (nuevoEstado: string, etapa: number) => {
     setLoading(true);
     setEstadoActual(nuevoEstado);
+
+    // Actualizar la ubicación del usuario
+    await actualizarUbicacionUsuario();
     
     try {
       // Obtener ubicación actual
@@ -268,6 +330,9 @@ const DetalleTickets = () => {
     }
     
     setLoading(true);
+
+    // Actualizar la ubicación del usuario
+    await actualizarUbicacionUsuario();
     
     try {
       // Obtener token almacenado
