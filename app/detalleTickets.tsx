@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import axios from 'axios'
 import * as Location from 'expo-location'
+import { getBackendUrl } from './services/locationService'
 
 const DetalleTickets = () => {
   const router = useRouter();
@@ -22,6 +23,7 @@ const DetalleTickets = () => {
   const [ubicacion, setUbicacion] = useState<{latitude: number; longitude: number} | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const page = "https://servicedesk-dev-is.onbmc.com";
+  const backendUrl = getBackendUrl();
   
   // Estado para controlar qué botones están habilitados
   const [etapaActual, setEtapaActual] = useState<number>(1); // 1: Saliendo a sitio, 2: En sitio, 3: Soporte finalizado, 4: Resolución
@@ -178,7 +180,7 @@ const DetalleTickets = () => {
       }
 
       // Obtener la lista de usuarios del backend
-      const backendUsers = await axios.get('https://backend-soporte-campo-vpc.onrender.com/usuarios');
+      const backendUsers = await axios.get(`${backendUrl}/usuarios`);
       if (!Array.isArray(backendUsers.data)) {
         console.error('Error: La respuesta del backend no es un array', backendUsers.data);
         return;
@@ -211,7 +213,7 @@ const DetalleTickets = () => {
       });
 
       // Actualizar la ubicación en el backend
-      const updateUrl = `https://backend-soporte-campo-vpc.onrender.com/usuario/${userId}`;
+      const updateUrl = `${backendUrl}/usuario/${userId}`;
       await axios.put(updateUrl, {
         latitud: location.coords.latitude,
         longitud: location.coords.longitude

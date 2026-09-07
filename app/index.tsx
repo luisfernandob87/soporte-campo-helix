@@ -5,6 +5,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 import logo from "../assets/images/VPC_LOGO_texto_vertical.png";
 import * as Location from 'expo-location';
+import { getBackendUrl } from "./services/locationService";
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -19,6 +20,7 @@ export default function HomeScreen() {
     // No limpiamos AsyncStorage aquí para mantener las credenciales
    
     const page = "https://servicedesk-dev-is.onbmc.com";
+    const backendUrl = getBackendUrl();
    
     // Función para actualizar la ubicación del usuario en el backend
     const actualizarUbicacionUsuario = async (usuarioId) => {
@@ -32,6 +34,9 @@ export default function HomeScreen() {
           router.push("/menu");
           return;
         }
+        
+        // Guardar el ID del usuario para el tracking de ubicación
+        await AsyncStorage.setItem("usuario_id", String(usuarioId));
         
         // Solicitar permisos de ubicación
         let { status } = await Location.requestForegroundPermissionsAsync();
@@ -60,7 +65,7 @@ export default function HomeScreen() {
         });
         
         // Actualizar la ubicación en el backend
-        const updateUrl = `https://backend-soporte-campo-vpc.onrender.com/usuario/${idUsuarioFormateado}`;
+        const updateUrl = `${backendUrl}/usuario/${idUsuarioFormateado}`;
         console.log("URL de actualización:", updateUrl);
         
         const response = await axios.put(updateUrl, {
@@ -92,7 +97,7 @@ export default function HomeScreen() {
         try {
           console.log("Intentando actualizar ubicación con formato alternativo...");
           // Probar con otro endpoint
-          const alternativeUrl = `https://backend-soporte-campo-vpc.onrender.com/usuario/ubicacion/${idUsuarioFormateado}`;
+          const alternativeUrl = `${backendUrl}/usuario/ubicacion/${idUsuarioFormateado}`;
           console.log("URL alternativa 1:", alternativeUrl);
           
           const altResponse = await axios.post(alternativeUrl, {
@@ -112,7 +117,7 @@ export default function HomeScreen() {
           
           // Intentar con un segundo formato alternativo
           try {
-            const alternativeUrl2 = `https://backend-soporte-campo-vpc.onrender.com/usuarios/${idUsuarioFormateado}/ubicacion`;
+            const alternativeUrl2 = `${backendUrl}/usuarios/${idUsuarioFormateado}/ubicacion`;
             console.log("URL alternativa 2:", alternativeUrl2);
             
             const altResponse2 = await axios.put(alternativeUrl2, {
@@ -131,7 +136,7 @@ export default function HomeScreen() {
             
             // Intentar con un tercer formato alternativo
             try {
-              const alternativeUrl3 = `https://backend-soporte-campo-vpc.onrender.com/usuario/actualizarUbicacion`;
+              const alternativeUrl3 = `${backendUrl}/usuario/actualizarUbicacion`;
               console.log("URL alternativa 3:", alternativeUrl3);
               
               const altResponse3 = await axios.post(alternativeUrl3, {
@@ -202,7 +207,7 @@ export default function HomeScreen() {
                   const fullName = userData["Full Name"] || "";
                   
                   // Verificar si el usuario existe en el backend
-                  axios.get("https://backend-soporte-campo-vpc.onrender.com/usuarios")
+                  axios.get(`${backendUrl}/usuarios`)
                     .then((backendUsers) => {
                       console.log("Respuesta de usuarios del backend:", backendUsers.data);
                       
@@ -220,7 +225,7 @@ export default function HomeScreen() {
                       
                       if (!userExists) {
                         // Crear el usuario en el backend
-                        axios.post("https://backend-soporte-campo-vpc.onrender.com/usuario", {
+                        axios.post(`${backendUrl}/usuario`, {
                           usuario: usuario,
                           nombreCompleto: fullName
                         })

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react'
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import axios from "axios"
 import { useRouter } from "expo-router"
+import { startTracking, stopTracking } from "./services/locationService"
 
 const menu = () => {
   const [usuario, setUsuario] = useState("");
@@ -128,7 +129,28 @@ const menu = () => {
     getUserData();
   }, []);
   
+  // Iniciar el tracking de ubicación en tiempo real al entrar al menú
+  useEffect(() => {
+    const iniciarTracking = async () => {
+      try {
+        const usuarioId = await AsyncStorage.getItem("usuario_id");
+        if (usuarioId) {
+          await startTracking(usuarioId);
+        }
+      } catch (error) {
+        console.error("Error al iniciar tracking de ubicación:", error);
+      }
+    };
+    
+    iniciarTracking();
+    
+    // Detener el tracking al desmontar la pantalla
+    return () => stopTracking();
+  }, []);
+  
   const handleLogout = () => {
+    // Detener el tracking de ubicación antes de cerrar sesión
+    stopTracking();
     // Limpiar el almacenamiento y redirigir al login
     AsyncStorage.clear();
     router.push("/");
