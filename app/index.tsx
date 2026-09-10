@@ -231,20 +231,13 @@ export default function HomeScreen() {
                         })
                         .then((response) => {
                           console.log("Usuario creado exitosamente", response.data);
-                          // Verificar y extraer el ID del usuario
-                          const userId = response.data.usuario_id || response.data.id || response.data._id;
-                          console.log("ID del usuario creado:", userId);
-                          
-                          if (!userId) {
-                            console.error("Error: No se pudo obtener el ID del usuario creado", response.data);
-                            setLoading(false);
-                            setPassword("");
-                            router.push("/menu");
-                            return;
-                          }
-                          
-                          // Actualizar ubicación del usuario
-                          actualizarUbicacionUsuario(userId);
+                          // Sin rol asignado, no puede acceder hasta darlo de alta
+                          Alert.alert(
+                            "Usuario pendiente",
+                            "Comuníquese con un coordinador para darle de alta en el sistema."
+                          );
+                          setLoading(false);
+                          setPassword("");
                         })
                         .catch((error) => {
                           console.error("Error al crear usuario:", error);
@@ -262,6 +255,17 @@ export default function HomeScreen() {
                         console.log("Usuario existente encontrado:", existingUser);
                         
                         if (existingUser) {
+                          // Sin rol asignado no puede acceder hasta darlo de alta
+                          if (!String(existingUser.rol || "").trim()) {
+                            console.log("Usuario sin rol asignado");
+                            Alert.alert(
+                              "Usuario pendiente",
+                              "Comuníquese con un coordinador para darle de alta en el sistema."
+                            );
+                            setLoading(false);
+                            setPassword("");
+                            return;
+                          }
                           // Buscar el ID en diferentes propiedades posibles
                           const userId = existingUser.usuario_id || existingUser.id || existingUser._id;
                           console.log("ID del usuario existente:", userId);
