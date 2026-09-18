@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react'
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import axios from "axios"
 import { useLocalSearchParams, useRouter } from "expo-router"
+import { prioridadFormateada } from "./services/prioridad"
 
 const Tickets = () => {
   const router = useRouter();
@@ -12,6 +13,30 @@ const Tickets = () => {
   const [loading, setLoading] = useState(true);
   const [username, setUsername] = useState("");
   const page = "https://servicedesk-dev-is.onbmc.com";
+
+  // Resuelve el nombre del cliente con los campos de nombre reales (First + Last),
+  // como en las órdenes de trabajo. NO usa campos de login/usuario (Submitter).
+  const obtenerNombreCliente = (values: any): string => {
+    const primerValor = (keys: string[]) =>
+      keys.map((k) => values?.[k]).find((v) => v && String(v).trim()) || "";
+
+    // Primero + Apellido en campos separados
+    const nombre = primerValor([
+      "Customer First Name",
+      "First Name",
+      "Contact First Name"
+    ]);
+    const apellido = primerValor([
+      "Customer Last Name",
+      "Last Name",
+      "Contact Last Name"
+    ]);
+    const nombreCompleto = [nombre, apellido].filter(Boolean).join(" ").trim();
+    if (nombreCompleto) return nombreCompleto;
+
+    // Nombre ya compuesto en un solo campo
+    return primerValor(["Customer Name", "Contact Name"]) || "Sin cliente";
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -36,7 +61,7 @@ const Tickets = () => {
         
         // Hacer la petición a la API para obtener los tickets asignados
         const ticketsResponse = await axios.request({
-          url: `${page}/api/arsys/v1/entry/HPD:Help%20Desk?q=%27Assigned%20Group%20ID%27%3D%22${groupId}%22%20AND%20%27Assignee%20Login%20ID%27%3D%22${storedUsername}%22%20AND%27Status%27!%3D%22Resolved%22%20AND%20%27Status%27!%3D%22Closed%22%20AND%20%27Status%27!%3D%22Cancelled%22`,
+          url: `${page}/api/arsys/v1/entry/HPD:IncidentInterface?q=%27Assigned%20Group%20ID%27%3D%22${groupId}%22%20AND%20%27Assignee%20Login%20ID%27%3D%22${storedUsername}%22%20AND%27Status%27!%3D%22Resolved%22%20AND%20%27Status%27!%3D%22Closed%22%20AND%20%27Status%27!%3D%22Cancelled%22`,
           method: "GET",
           headers: headersList,
         });
@@ -47,9 +72,9 @@ const Tickets = () => {
         if (ticketsResponse.data && ticketsResponse.data.entries) {
           const ticketsData = ticketsResponse.data.entries.map((entry: any) => ({
             id: entry.values["Request ID"] || "Sin ID",
-            dwpSrid: entry.values["DWP_SRID"] || "Sin ID de petición",
+            dwpSrid: entry.values["DWP_SRID"] || entry.values["SRID"] || "Sin ID de petición",
             incidentNumber: entry.values["Incident Number"] || "Sin número de incidente",
-            urgency: entry.values["Urgency"] || "Sin resumen",
+            cliente: obtenerNombreCliente(entry.values),
             priority: entry.values["Priority"] || "Estado desconocido",
             type: "ticket"
           }));
@@ -74,7 +99,7 @@ const Tickets = () => {
             id: entry.values["Request ID"] || "Sin ID",
             dwpSrid: entry.values["DWP_SRID"] || entry.values["SRID"] || "Sin ID de petición",
             workOrderId: entry.values["Work Order ID"] || "Sin número de orden",
-            urgency: entry.values["Urgency"] || "Sin urgencia",
+            cliente: obtenerNombreCliente(entry.values),
             priority: entry.values["Priority"] || "Sin prioridad",
             type: "workOrder"
           }));
@@ -107,7 +132,7 @@ const Tickets = () => {
         dwpSrid: item.dwpSrid,
         type: item.type,
         incidentNumber: item.type === "ticket" ? item.incidentNumber : item.workOrderId,
-        urgency: item.urgency,
+        cliente: item.cliente,
         priority: item.priority
       }
     });
@@ -121,8 +146,10 @@ const Tickets = () => {
           <View style={styles.ticketItem}>
             <Text style={styles.ticketTitle}>ID de Petición: {item.dwpSrid}</Text>
             <Text style={styles.ticketSubtitle}>Número de Incidente: {item.incidentNumber}</Text>
-            <Text style={styles.ticketSummary}>Urgencia: {item.urgency}</Text>
-            <Text style={styles.ticketStatus}>Prioridad: {item.priority}</Text>
+            <Text style={styles.ticketSummary}>Cliente: {item.cliente}</Text>
+            <Text style={[styles.ticketStatus, { color: prioridadFormateada(item.priority).color }]}>
+              Prioridad: {prioridadFormateada(item.priority).label}
+            </Text>
           </View>
         </TouchableOpacity>
       );
@@ -132,8 +159,10 @@ const Tickets = () => {
           <View style={[styles.ticketItem, styles.workOrderItem]}>
             <Text style={styles.ticketTitle}>ID de Petición: {item.dwpSrid}</Text>
             <Text style={styles.ticketSubtitle}>Número de Orden: {item.workOrderId}</Text>
-            <Text style={styles.ticketSummary}>Urgencia: {item.urgency}</Text>
-            <Text style={styles.ticketStatus}>Prioridad: {item.priority}</Text>
+            <Text style={styles.ticketSummary}>Cliente: {item.cliente}</Text>
+            <Text style={[styles.ticketStatus, { color: prioridadFormateada(item.priority).color }]}>
+              Prioridad: {prioridadFormateada(item.priority).label}
+            </Text>
           </View>
         </TouchableOpacity>
       );

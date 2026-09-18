@@ -3,17 +3,28 @@ import * as TaskManager from 'expo-task-manager';
 import axios from 'axios';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { distanciaMetros, FiltroKalman } from './filtroUbicacion';
 
 // Puerto donde corre el backend local
 const BACKEND_PORT = 4000;
 
 // Sobrescribir con la URL fija del backend si se despliega (por ejemplo, en Render)
-const OVERRIDE_BACKEND_URL = '';
+const OVERRIDE_BACKEND_URL = 'https://backend-soporte-campo-vpc.onrender.com';
 
 // Frecuencia de muestreo (30 s para pruebas, luego ajustar a 60 s)
 const INTERVALO_MS = 30 * 1000;
 // Máximo tiempo de espera para obtener un fix nuevo de ubicación
 const TIMEOUT_UBICACION_MS = 20000;
+
+// Precisión máxima aceptada en metros: los puntos peores que esto se descartan.
+const ACCURACY_MAXIMA_MS = 30;
+// Antigüedad máxima (ms) aceptada para el fallback de "última posición conocida".
+const FRESCURA_LAST_KNOWN_MS = 120000;
+// Velocidad máxima plausible (km/h) para detectar picos GPS (satélite saltando).
+const VELOCIDAD_MAXIMA_KMH = 120;
+const VELOCIDAD_MAXIMA_MS = VELOCIDAD_MAXIMA_KMH / 3.6;
+// Distancia mínima (m) respecto al último punto enviado para considerarse "movimiento".
+const DISTANCIA_MINIMA_MOVIMIENTO_MS = 15;
 
 // Nombre de la tarea que registra ubicación estando la app en segundo plano
 const TAREA_UBICACION_FONDO = 'ubicacion-en-fondo';
@@ -24,7 +35,8 @@ export const getBackendUrl = (): string => {
   // que es la misma máquina donde corre el backend, para que funcione en el dispositivo.
   const hostUri = Constants.expoConfig?.hostUri;
   const host = hostUri?.split(':')[0];
-  return host ? `http://${host}:${BACKEND_PORT}` : `http://localhost:${BACKEND_PORT}`;
+  // return host ? `http://${host}:${BACKEND_PORT}` : `http://localhost:${BACKEND_PORT}`;
+  return host ? `https://backend-soporte-campo-vpc.onrender.com` : `https://backend-soporte-campo-vpc.onrender.com:${BACKEND_PORT}`;
 };
 
 let intervaloForeground: ReturnType<typeof setInterval> | null = null;
@@ -34,6 +46,14 @@ let ultimoEnvio: number = 0;
 let avisoServiciosGPS = false;
 let obteniendoUbicacion = false;
 let ultimasCoordenadas: { latitude: number; longitude: number } | null = null;
+// Filtro Kalman para suavizar la señal y último punto ACEPTADO por el pipeline
+// (se usa para detectar picos GPS y alimenta el filtro).
+let filtroKalman: FiltroKalman | null = null;
+let ultimoPuntoAceptado: {
+  latitude: number;
+  longitude: number;
+  timestamp: number;
+} | null = null;
 
 // Regla de envío (1 punto por cambio real o por cadencia, nunca duplicados):
 // - `bloqueoEnvioHasta` reserva (síncronamente) el derecho de enviar el próximo
@@ -42,16 +62,58 @@ let ultimasCoordenadas: { latitude: number; longitude: number } | null = null;
 // - después, se envía si pasó la cadencia (usuario quieto, ruta continua) o si
 //   el punto cambió de verdad (movimiento).
 const MIN_INTERVALO_ENVIO_MS = 8000;
-const EPSILON_MISMO_PUNTO = 0.0002;
 
 let bloqueoEnvioHasta = 0;
 
-const mismoPunto = (coords: { latitude: number; longitude: number }): boolean => {
-  if (!ultimasCoordenadas) return false;
-  return (
-    Math.abs(coords.latitude - ultimasCoordenadas.latitude) <= EPSILON_MISMO_PUNTO &&
-    Math.abs(coords.longitude - ultimasCoordenadas.longitude) <= EPSILON_MISMO_PUNTO
+// Pipeline de validación y suavizado que corre cada punto nuevo (síncrono):
+// 1) precisión mínima, 2) rechazo de picos GPS, 3) filtro Kalman,
+// 4) deduplicación por distancia real (punto 6).
+const procesarPunto = (
+  coords: { latitude: number; longitude: number; accuracy: number | null },
+  ts: number
+): { latitude: number; longitude: number; accuracy: number | null } | null => {
+  // (1) Precisión mínima
+  if (coords.accuracy == null || coords.accuracy > ACCURACY_MAXIMA_MS) {
+    console.warn(
+      `[APP] Punto descartado por precisión (${coords.accuracy ?? 'n/a'} m)`
+    );
+    return null;
+  }
+
+  // (3) Rechazo de picos: velocidad imposible respecto al último punto aceptado
+  if (ultimoPuntoAceptado) {
+    const dtSeg = (ts - ultimoPuntoAceptado.timestamp) / 1000;
+    if (dtSeg > 0) {
+      const dist = distanciaMetros(
+        ultimoPuntoAceptado.latitude,
+        ultimoPuntoAceptado.longitude,
+        coords.latitude,
+        coords.longitude
+      );
+      if (dist / dtSeg > VELOCIDAD_MAXIMA_MS) {
+        console.warn(
+          `[APP] Pico GPS descartado (${dist.toFixed(0)} m en ${dtSeg.toFixed(0)} s)`
+        );
+        return null;
+      }
+    }
+  }
+
+  // (4) Suavizado Kalman
+  if (!filtroKalman) filtroKalman = new FiltroKalman();
+  const filtrado = filtroKalman.filtrar(
+    coords.latitude,
+    coords.longitude,
+    coords.accuracy,
+    ts
   );
+  ultimoPuntoAceptado = {
+    latitude: filtrado.latitude,
+    longitude: filtrado.longitude,
+    timestamp: ts
+  };
+
+  return { ...filtrado, accuracy: coords.accuracy };
 };
 
 const debeEnviar = (coords: { latitude: number; longitude: number }): boolean => {
@@ -59,8 +121,20 @@ const debeEnviar = (coords: { latitude: number; longitude: number }): boolean =>
   // Ya se decidió un envío hace menos de MIN_INTERVALO_ENVIO_MS ms → no duplicar.
   if (ahora < bloqueoEnvioHasta) return false;
 
+  if (!ultimasCoordenadas) {
+    bloqueoEnvioHasta = ahora + MIN_INTERVALO_ENVIO_MS;
+    return true;
+  }
+
+  // (6) Filtro estacionario: distancia real (metros) al último punto enviado.
+  const distancia = distanciaMetros(
+    ultimasCoordenadas.latitude,
+    ultimasCoordenadas.longitude,
+    coords.latitude,
+    coords.longitude
+  );
   const enCadencia = !ultimoEnvio || ahora - ultimoEnvio >= INTERVALO_MS - 4000;
-  if (enCadencia || !mismoPunto(coords)) {
+  if (enCadencia || distancia >= DISTANCIA_MINIMA_MOVIMIENTO_MS) {
     bloqueoEnvioHasta = ahora + MIN_INTERVALO_ENVIO_MS;
     return true;
   }
@@ -125,8 +199,19 @@ const obtenerPosicion = async (): Promise<Location.LocationObject | null> => {
     );
   }
 
+  // Respaldo SOLO si la última conocida es reciente y con buena precisión;
+  // de lo contrario se omite el ciclo (mejor un hueco que un salto).
   try {
-    return await Location.getLastKnownPositionAsync();
+    const lastKnown = await Location.getLastKnownPositionAsync();
+    if (!lastKnown) return null;
+    const fresco = Date.now() - lastKnown.timestamp <= FRESCURA_LAST_KNOWN_MS;
+    const preciso =
+      (lastKnown.coords.accuracy ?? Infinity) <= ACCURACY_MAXIMA_MS;
+    if (fresco && preciso) return lastKnown;
+    console.warn(
+      "[APP] Última posición conocida descartada (no fresca o imprecisa)"
+    );
+    return null;
   } catch {
     return null;
   }
@@ -149,8 +234,10 @@ const registrarPuntoInmediato = async () => {
     longitude: location.coords.longitude,
     accuracy: location.coords.accuracy ?? null
   };
-  if (!debeEnviar(coords)) return;
-  await enviarUbicacion(coords, null);
+  const punto = procesarPunto(coords, location.timestamp);
+  if (!punto) return;
+  if (!debeEnviar(punto)) return;
+  await enviarUbicacion(punto, null);
 };
 
 // Manejador de la tarea en segundo plano (se ejecuta aunque la app esté cerrada).
@@ -173,8 +260,10 @@ TaskManager.defineTask(TAREA_UBICACION_FONDO, async ({ data, error }: any) => {
       longitude: location.coords.longitude,
       accuracy: location.coords.accuracy ?? null
     };
-    if (!debeEnviar(coords)) continue;
-    await enviarUbicacion(coords, usuarioId);
+    const punto = procesarPunto(coords, location.timestamp);
+    if (!punto) continue;
+    if (!debeEnviar(punto)) continue;
+    await enviarUbicacion(punto, usuarioId);
   }
 });
 
@@ -191,7 +280,7 @@ const iniciarTareaFondo = async () => {
     }
 
     await Location.startLocationUpdatesAsync(TAREA_UBICACION_FONDO, {
-      accuracy: Location.Accuracy.Balanced,
+      accuracy: Location.Accuracy.High,
       distanceInterval: 10,
       timeInterval: INTERVALO_MS,
       pausesUpdatesAutomatically: false,
@@ -229,6 +318,8 @@ export const startTracking = async (usuarioId: string): Promise<boolean> => {
   usuarioIdActual = usuarioId;
   ultimoEnvio = 0;
   ultimasCoordenadas = null;
+  filtroKalman = null;
+  ultimoPuntoAceptado = null;
 
   // Registrar un punto al iniciar sesión
   await registrarPuntoInmediato();
@@ -260,8 +351,10 @@ export const startTracking = async (usuarioId: string): Promise<boolean> => {
           longitude: location.coords.longitude,
           accuracy: location.coords.accuracy ?? null
         };
-        if (!debeEnviar(coords)) return;
-        enviarUbicacion(coords, null);
+        const punto = procesarPunto(coords, location.timestamp);
+        if (!punto) return;
+        if (!debeEnviar(punto)) return;
+        enviarUbicacion(punto, null);
       }
     );
   } catch (watchError) {
@@ -296,4 +389,6 @@ export const stopTracking = async () => {
   usuarioIdActual = null;
   ultimoEnvio = 0;
   ultimasCoordenadas = null;
+  filtroKalman = null;
+  ultimoPuntoAceptado = null;
 };

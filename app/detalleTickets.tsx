@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import axios from 'axios'
 import * as Location from 'expo-location'
 import { getBackendUrl } from './services/locationService'
+import { prioridadFormateada } from './services/prioridad'
 
 const DetalleTickets = () => {
   const router = useRouter();
@@ -13,7 +14,7 @@ const DetalleTickets = () => {
     dwpSrid: string;
     type: string;
     incidentNumber: string;
-    urgency: string;
+    cliente: string;
     priority: string;
   }>();
 
@@ -518,8 +519,10 @@ const DetalleTickets = () => {
         <Text style={styles.infoDetail}>
           {params.type === "ticket" ? "Número de Incidente" : "Número de Orden"}: {params.incidentNumber}
         </Text>
-        <Text style={styles.infoDetail}>Urgencia: {params.urgency}</Text>
-        <Text style={styles.infoDetail}>Prioridad: {params.priority}</Text>
+        <Text style={styles.infoDetail}>Cliente: {params.cliente}</Text>
+        <Text style={[styles.infoDetail, { color: prioridadFormateada(params.priority).color }]}>
+          Prioridad: {prioridadFormateada(params.priority).label}
+        </Text>
         {estadoActual ? <Text style={styles.estadoActual}>Estado actual: {estadoActual}</Text> : null}
         {ubicacion ? (
           <View style={styles.ubicacionContainer}>
