@@ -8,8 +8,10 @@ import { distanciaMetros, FiltroKalman } from './filtroUbicacion';
 // Puerto donde corre el backend local
 const BACKEND_PORT = 4000;
 
-// Sobrescribir con la URL fija del backend si se despliega (por ejemplo, en Render)
-const OVERRIDE_BACKEND_URL = 'https://backend-soporte-campo-vpc.onrender.com';
+// URL fija del backend cuando no se usa el modo local.
+// En desarrollo local: definir EXPO_PUBLIC_OVERRIDE_BACKEND_URL=local
+// en .env.local para que use la IP del equipo desde Expo Go.
+const OVERRIDE_BACKEND_URL = process.env.EXPO_PUBLIC_OVERRIDE_BACKEND_URL;
 
 // Frecuencia de muestreo (30 s para pruebas, luego ajustar a 60 s)
 const INTERVALO_MS = 30 * 1000;
@@ -30,13 +32,22 @@ const DISTANCIA_MINIMA_MOVIMIENTO_MS = 15;
 const TAREA_UBICACION_FONDO = 'ubicacion-en-fondo';
 
 export const getBackendUrl = (): string => {
-  if (OVERRIDE_BACKEND_URL) return OVERRIDE_BACKEND_URL;
-  // En desarrollo (Expo Go / build de dev), usa la IP del host del servidor Metro,
-  // que es la misma máquina donde corre el backend, para que funcione en el dispositivo.
-  const hostUri = Constants.expoConfig?.hostUri;
-  const host = hostUri?.split(':')[0];
-  // return host ? `http://${host}:${BACKEND_PORT}` : `http://localhost:${BACKEND_PORT}`;
-  return host ? `https://backend-soporte-campo-vpc.onrender.com` : `https://backend-soporte-campo-vpc.onrender.com:${BACKEND_PORT}`;
+  const override = OVERRIDE_BACKEND_URL;
+
+  // Modo local (EXPO_PUBLIC_OVERRIDE_BACKEND_URL=local): usa la IP del host de
+  // Metro, que es la misma máquina donde corre el backend, para que funcione
+  // en el dispositivo real (Expo Go) dentro de la misma red Wi-Fi.
+  if (override === 'local') {
+    const hostUri = Constants.expoConfig?.hostUri;
+    const host = hostUri?.split(':')[0];
+    return host ? `http://${host}:${BACKEND_PORT}` : `http://localhost:${BACKEND_PORT}`;
+  }
+
+  // URL explícita definida en build/entorno.
+  if (override) return override;
+
+  // Valor por defecto (producción): coincide con el comportamiento previo.
+  return 'https://backend-soporte-campo-vpc.onrender.com';
 };
 
 let intervaloForeground: ReturnType<typeof setInterval> | null = null;
