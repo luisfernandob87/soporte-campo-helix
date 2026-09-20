@@ -4,6 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage"
 import axios from "axios"
 import { useRouter } from "expo-router"
 import { startTracking, stopTracking } from "./services/locationService"
+import { detenerCanalNotificaciones } from "./services/notificacionesService"
 
 const menu = () => {
   const [usuario, setUsuario] = useState("");
@@ -110,7 +111,7 @@ const menu = () => {
                     }
                     
                     // Actualizar el estado con los grupos completos
-                    setSupportGroups(updatedGroups);
+                    setSupportGroups(updatedGroups.filter(group => group.name.startsWith("Ruta")));
                   };
                   
                   fetchGroupDetails();
@@ -151,6 +152,8 @@ const menu = () => {
   const handleLogout = () => {
     // Detener el tracking de ubicación antes de cerrar sesión
     stopTracking();
+    // Detener el canal de notificaciones en tiempo real
+    detenerCanalNotificaciones();
     // Limpiar el almacenamiento y redirigir al login
     AsyncStorage.clear();
     router.push("/");

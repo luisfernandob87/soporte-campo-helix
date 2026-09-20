@@ -6,6 +6,7 @@ import axios from "axios";
 import logo from "../assets/images/VPC_LOGO_texto_vertical.png";
 import * as Location from 'expo-location';
 import { getBackendUrl } from "./services/locationService";
+import { iniciarCanalNotificaciones } from "./services/notificacionesService";
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -37,6 +38,9 @@ export default function HomeScreen() {
         
         // Guardar el ID del usuario para el tracking de ubicación
         await AsyncStorage.setItem("usuario_id", String(usuarioId));
+        
+        // Conectar el canal de notificaciones en tiempo real
+        iniciarCanalNotificaciones(usuarioId);
         
         // Solicitar permisos de ubicación
         let { status } = await Location.requestForegroundPermissionsAsync();

@@ -1,8 +1,15 @@
 import { Stack } from "expo-router";
+import { NotificacionesProvider } from "./context/NotificacionesContext";
 
 export default function RootLayout() {
-  return <Stack 
-screenOptions={{ headerShown: false,
-animationType: "slide_from_right",
- }} />;
+  return (
+    <NotificacionesProvider>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          animationType: "slide_from_right",
+        }}
+      />
+    </NotificacionesProvider>
+  );
 }
