@@ -23,10 +23,20 @@ const ACCURACY_MAXIMA_MS = 30;
 // Antigüedad máxima (ms) aceptada para el fallback de "última posición conocida".
 const FRESCURA_LAST_KNOWN_MS = 120000;
 // Velocidad máxima plausible (km/h) para detectar picos GPS (satélite saltando).
-const VELOCIDAD_MAXIMA_KMH = 120;
+// Una camioneta en ruta no supera esto por sí sola.
+const VELOCIDAD_MAXIMA_KMH = 100;
 const VELOCIDAD_MAXIMA_MS = VELOCIDAD_MAXIMA_KMH / 3.6;
+// Tope absoluto por salto (m) para desviaciones en una VENTANA CORTA de tiempo.
+// No se aplica a muestras separadas por más de MAXIMO_DT_TOPE_SEG segundos:
+// entre muestras largas (30 s) un vehículo a velocidad legal recorre cientos de
+// metros sin que eso sea un salto.
+const SALTO_MAXIMO_M = 150;
+const MAXIMO_DT_TOPE_SEG = 20;
 // Distancia mínima (m) respecto al último punto enviado para considerarse "movimiento".
 const DISTANCIA_MINIMA_MOVIMIENTO_MS = 15;
+// Clave en AsyncStorage de la última referencia aceptada (para validar el
+// primer punto cuando el contexto de segundo plano arranca sin estado en memoria).
+const KEY_ULTIMO_PUNTO_ACEPTADO = 'ultimo_punto_aceptado_v2';
 
 // Nombre de la tarea que registra ubicación estando la app en segundo plano
 const TAREA_UBICACION_FONDO = 'ubicacion-en-fondo';
@@ -66,6 +76,19 @@ let ultimoPuntoAceptado: {
   timestamp: number;
 } | null = null;
 
+// Cola FIFO que serializa el procesado de TODOS los puntos (muestreo periódico,
+// suscripción de cambios y segundo plano). Garantiza orden estricto por
+// timestamp y evita que dos flujos procesen el mismo fix (doble ajuste del
+// Kalman) o que uno llegue fuera de orden y se valide sin control de picos.
+type ItemCola = {
+  coords: { latitude: number; longitude: number; accuracy: number | null };
+  timestamp: number;
+  usuarioId: string | null;
+};
+let colaPuntos: ItemCola[] = [];
+let procesandoCola = false;
+let ultimoTimestampProcesado: number | null = null;
+
 // Regla de envío (1 punto por cambio real o por cadencia, nunca duplicados):
 // - `bloqueoEnvioHasta` reserva (síncronamente) el derecho de enviar el próximo
 //   MIN_INTERVALO_ENVIO_MS ms: si dos flujos (muestreo y suscripción) evalúan
@@ -76,13 +99,24 @@ const MIN_INTERVALO_ENVIO_MS = 8000;
 
 let bloqueoEnvioHasta = 0;
 
-// Pipeline de validación y suavizado que corre cada punto nuevo (síncrono):
-// 1) precisión mínima, 2) rechazo de picos GPS, 3) filtro Kalman,
-// 4) deduplicación por distancia real (punto 6).
+// Pipeline de validación y suavizado que corre para CADA punto nuevo, de forma
+// serializada por la cola (1 punto a la vez, en orden de timestamp):
+// 0) orden estricto / sin duplicados, 1) precisión mínima, 2) rechazo de picos
+// GPS (tope de ventana corta + velocidad media), 3) filtro Kalman.
 const procesarPunto = (
   coords: { latitude: number; longitude: number; accuracy: number | null },
   ts: number
 ): { latitude: number; longitude: number; accuracy: number | null } | null => {
+  // (0) Orden estricto: se ignora cualquier punto fuera de orden o duplicado.
+  // Antes, un fix viejo que llegaba "después" (típico con la suscripción y el
+  // muestreo en paralelo) tenía dt <= 0, saltaba el control de picos y se
+  // enviaba como salto.
+  if (ultimoTimestampProcesado !== null && ts <= ultimoTimestampProcesado) {
+    console.warn(`[APP] Punto fuera de orden/duplicado descartado (ts=${ts})`);
+    return null;
+  }
+  ultimoTimestampProcesado = ts;
+
   // (1) Precisión mínima
   if (coords.accuracy == null || coords.accuracy > ACCURACY_MAXIMA_MS) {
     console.warn(
@@ -91,26 +125,34 @@ const procesarPunto = (
     return null;
   }
 
-  // (3) Rechazo de picos: velocidad imposible respecto al último punto aceptado
+  // (2) Rechazo de picos vs. último punto ACEPTADO (el estado que se cree real)
   if (ultimoPuntoAceptado) {
+    // dtSeg > 0 está garantizado por el control (0) de orden estricto.
     const dtSeg = (ts - ultimoPuntoAceptado.timestamp) / 1000;
-    if (dtSeg > 0) {
-      const dist = distanciaMetros(
-        ultimoPuntoAceptado.latitude,
-        ultimoPuntoAceptado.longitude,
-        coords.latitude,
-        coords.longitude
+    const dist = distanciaMetros(
+      ultimoPuntoAceptado.latitude,
+      ultimoPuntoAceptado.longitude,
+      coords.latitude,
+      coords.longitude
+    );
+    // Tope absoluto en ventana corta: un desplazamiento de +150 m en pocos
+    // segundos es una teletransportación del proveedor, imposible al volante.
+    if (dtSeg <= MAXIMO_DT_TOPE_SEG && dist > SALTO_MAXIMO_M) {
+      console.warn(
+        `[APP] Salto GPS descartado por tope de ventana (${dist.toFixed(0)} m en ${dtSeg.toFixed(0)} s)`
       );
-      if (dist / dtSeg > VELOCIDAD_MAXIMA_MS) {
-        console.warn(
-          `[APP] Pico GPS descartado (${dist.toFixed(0)} m en ${dtSeg.toFixed(0)} s)`
-        );
-        return null;
-      }
+      return null;
+    }
+    // Velocidad media implausible entre esta muestra y la anterior.
+    if (dist / dtSeg > VELOCIDAD_MAXIMA_MS) {
+      console.warn(
+        `[APP] Pico GPS descartado por velocidad (${dist.toFixed(0)} m en ${dtSeg.toFixed(0)} s = ${((dist / dtSeg) * 3.6).toFixed(0)} km/h)`
+      );
+      return null;
     }
   }
 
-  // (4) Suavizado Kalman
+  // (3) Suavizado Kalman
   if (!filtroKalman) filtroKalman = new FiltroKalman();
   const filtrado = filtroKalman.filtrar(
     coords.latitude,
@@ -123,6 +165,8 @@ const procesarPunto = (
     longitude: filtrado.longitude,
     timestamp: ts
   };
+  // Referencia para el siguiente arranque (contexto de segundo plano headless)
+  void persistirUltimoPuntoAceptado();
 
   return { ...filtrado, accuracy: coords.accuracy };
 };
@@ -150,6 +194,85 @@ const debeEnviar = (coords: { latitude: number; longitude: number }): boolean =>
     return true;
   }
   return false;
+};
+
+const encolarPunto = (item: ItemCola) => {
+  colaPuntos.push(item);
+  void despacharCola();
+};
+
+// Procesa la cola de a un punto y en orden. Al estar serializado, no hay que
+// preocuparse por dos flujos procesando a la vez: el orden estricto por
+// timestamp de procesarPunto descarta duplicados y fixes viejos.
+const despacharCola = async () => {
+  if (procesandoCola) return;
+  procesandoCola = true;
+  try {
+    while (colaPuntos.length > 0) {
+      const item = colaPuntos.shift()!;
+      try {
+        const punto = procesarPunto(item.coords, item.timestamp);
+        if (!punto) continue;
+        if (!debeEnviar(punto)) continue;
+        await enviarUbicacion(punto, item.usuarioId);
+      } catch (error) {
+        console.error("[APP] Error procesando punto de ruta:", error);
+      }
+    }
+  } finally {
+    procesandoCola = false;
+  }
+};
+
+// Util para el contexto de segundo plano: la tarea espera aquí hasta que la
+// cola termine de drenarse antes de que el runtime la mate.
+const esperarColaVacia = (): Promise<void> =>
+  new Promise((resolve) => {
+    const tick = () => {
+      if (!procesandoCola && colaPuntos.length === 0) resolve();
+      else setTimeout(tick, 200);
+    };
+    tick();
+  });
+
+const persistirUltimoPuntoAceptado = async () => {
+  if (!ultimoPuntoAceptado) return;
+  try {
+    await AsyncStorage.setItem(
+      KEY_ULTIMO_PUNTO_ACEPTADO,
+      JSON.stringify(ultimoPuntoAceptado)
+    );
+  } catch {
+    // Solo es una referencia de respaldo; se ignora si no se puede guardar.
+  }
+};
+
+// Solo se adopta la referencia persistida si está FRESCA. Si pertenece a una
+// sesión anterior (p. ej. el usuario arrancó el día en otra zona), el primer
+// punto se valida sin referencia en lugar de descartarse por distancia.
+const cargarUltimoPuntoAceptado = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(KEY_ULTIMO_PUNTO_ACEPTADO);
+    if (!raw) return;
+    const migrado = JSON.parse(raw) as {
+      latitude: number;
+      longitude: number;
+      timestamp: number;
+    };
+    if (
+      typeof migrado?.latitude !== 'number' ||
+      typeof migrado?.longitude !== 'number' ||
+      typeof migrado?.timestamp !== 'number'
+    ) {
+      return;
+    }
+    if (Date.now() - migrado.timestamp > FRESCURA_LAST_KNOWN_MS) return;
+    ultimoPuntoAceptado = migrado;
+    ultimoTimestampProcesado = migrado.timestamp;
+    console.log("[APP] Referencia de validación cargada desde almacenamiento");
+  } catch {
+    // Dato corrupto o sin permisos: se arranca sin referencia.
+  }
 };
 
 const enviarUbicacion = async (
@@ -240,15 +363,15 @@ const registrarPuntoInmediato = async () => {
   }
 
   avisoServiciosGPS = false;
-  const coords = {
-    latitude: location.coords.latitude,
-    longitude: location.coords.longitude,
-    accuracy: location.coords.accuracy ?? null
-  };
-  const punto = procesarPunto(coords, location.timestamp);
-  if (!punto) return;
-  if (!debeEnviar(punto)) return;
-  await enviarUbicacion(punto, null);
+  encolarPunto({
+    coords: {
+      latitude: location.coords.latitude,
+      longitude: location.coords.longitude,
+      accuracy: location.coords.accuracy ?? null
+    },
+    timestamp: location.timestamp,
+    usuarioId: null
+  });
 };
 
 // Manejador de la tarea en segundo plano (se ejecuta aunque la app esté cerrada).
@@ -265,17 +388,25 @@ TaskManager.defineTask(TAREA_UBICACION_FONDO, async ({ data, error }: any) => {
   const usuarioId = await AsyncStorage.getItem('usuario_id');
   if (!usuarioId) return;
 
-  for (const location of Array.isArray(locations) ? locations : [locations]) {
-    const coords = {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-      accuracy: location.coords.accuracy ?? null
-    };
-    const punto = procesarPunto(coords, location.timestamp);
-    if (!punto) continue;
-    if (!debeEnviar(punto)) continue;
-    await enviarUbicacion(punto, usuarioId);
+  // El contexto headless puede arrancar sin estado en memoria: se recupera la
+  // última referencia aceptada para no aceptar el primer fix de cada lote sin
+  // validar (evita el "salto" típico al despertar el GPS).
+  if (!ultimoPuntoAceptado) await cargarUltimoPuntoAceptado();
+
+  const lista = Array.isArray(locations) ? locations : [locations];
+  for (const location of lista) {
+    encolarPunto({
+      coords: {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy ?? null
+      },
+      timestamp: location.timestamp,
+      usuarioId
+    });
   }
+  // Mantener viva la tarea hasta que la cola termine de drenarse.
+  await esperarColaVacia();
 });
 
 // Activa el registro en segundo plano. Solo funciona en un dev build
@@ -331,6 +462,11 @@ export const startTracking = async (usuarioId: string): Promise<boolean> => {
   ultimasCoordenadas = null;
   filtroKalman = null;
   ultimoPuntoAceptado = null;
+  ultimoTimestampProcesado = null;
+
+  // Si hay una referencia aceptada reciente (misma sesión), se reutiliza para
+  // validar el primer punto sin saltos tras arrancar/reconectar.
+  await cargarUltimoPuntoAceptado();
 
   // Registrar un punto al iniciar sesión
   await registrarPuntoInmediato();
@@ -357,15 +493,15 @@ export const startTracking = async (usuarioId: string): Promise<boolean> => {
         timeInterval: INTERVALO_MS
       },
       (location) => {
-        const coords = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          accuracy: location.coords.accuracy ?? null
-        };
-        const punto = procesarPunto(coords, location.timestamp);
-        if (!punto) return;
-        if (!debeEnviar(punto)) return;
-        enviarUbicacion(punto, null);
+        encolarPunto({
+          coords: {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+            accuracy: location.coords.accuracy ?? null
+          },
+          timestamp: location.timestamp,
+          usuarioId: null
+        });
       }
     );
   } catch (watchError) {
@@ -402,4 +538,5 @@ export const stopTracking = async () => {
   ultimasCoordenadas = null;
   filtroKalman = null;
   ultimoPuntoAceptado = null;
+  ultimoTimestampProcesado = null;
 };

@@ -94,6 +94,14 @@ class FiltroKalman1D {
 
     return this.pos;
   }
+
+  velocidad(): number {
+    return this.vel;
+  }
+
+  establecerVelocidad(v: number): void {
+    this.vel = v;
+  }
 }
 
 export class FiltroKalman {
@@ -128,13 +136,19 @@ export class FiltroKalman {
 
     // Recentrar si la medición quedó lejos de la referencia
     if (distanciaMetros(lat, lon, refLat, refLon) > UMBRAL_RECENTRAR_M) {
+      const vx = this.fx.velocidad();
+      const vy = this.fy.velocidad();
       this.refLat = latFiltrada;
       this.refLon = lonFiltrada;
       this.fx = new FiltroKalman1D();
       this.fy = new FiltroKalman1D();
-      // Sembrar la posición filtrada actual como origen
+      // Reinicio suave: se siembra en la posición FILTRADA (no en el punto
+      // crudo, que podría ser un salto) y se conserva la inercia estimada
+      // para no cortar la trayectoria en el reciente.
       this.fx.actualizar(0, ts, accuracy);
       this.fy.actualizar(0, ts, accuracy);
+      this.fx.establecerVelocidad(vx);
+      this.fy.establecerVelocidad(vy);
     }
 
     return { latitude: latFiltrada, longitude: lonFiltrada };
