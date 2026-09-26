@@ -7,6 +7,36 @@ import * as Location from 'expo-location'
 import { getBackendUrl } from './services/locationService'
 import { prioridadFormateada } from './services/prioridad'
 
+// Límite de espera de las peticiones. Sin un timeout explícito, axios espera
+// indefinidamente: si Helix o el backend se bloquean, el await no resuelve y el
+// setLoading(false) del finally nunca corre, dejando la pantalla inutilizable.
+const TIMEOUT_HELIX_MS = 30000;
+const TIMEOUT_BACKEND_MS = 15000;
+
+// Estados con los que un caso ya no se considera abierto. Se usan para detectar
+// los casos que quedaron marcados como completados en la app pero que nunca
+// llegaron a cerrarse en Helix.
+const ESTADOS_FINALES = [
+  'Resolved',
+  'Closed',
+  'Completed',
+  'Cancelled',
+  'Rejected',
+];
+
+// Helix añade un asterisco a los estados que tienen cambios pendientes de
+// procesar ("Resolved*"). Comparar sin normalizar haría creer que el caso sigue
+// abierto y borraría una resolución que sí se guardó.
+const normalizarEstadoHelix = (estado: string) =>
+  String(estado ?? '')
+    .trim()
+    .replace(/\*+$/, '')
+    .trim();
+
+// Texto con el que la app escribe la resolución en el Work Log. Es la única
+// señal de que el técnico ya terminó el caso.
+const PREFIJO_RESOLUCION = 'Resolución:';
+
 const DetalleTickets = () => {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -15,7 +45,10 @@ const DetalleTickets = () => {
     type: string;
     incidentNumber: string;
     cliente: string;
+    email: string;
     priority: string;
+    visita: string;
+    sede: string;
   }>();
 
   const [resolucion, setResolucion] = useState('');
@@ -68,6 +101,10 @@ const DetalleTickets = () => {
   // Función para cargar el progreso guardado y consultar WorkLog o WorkInfo
   const cargarProgresoYWorkLog = async () => {
     setLoading(true);
+    // Etapa más avanzada conocida entre lo guardado en el dispositivo y lo que
+    // dicen los Work Logs. Se lleva aparte porque el estado de React todavía
+    // vale 1 dentro de esta función al montarse por primera vez.
+    let etapaEfectiva = 1;
     try {
       // Primero intentamos cargar desde AsyncStorage
       const progresoGuardado = await AsyncStorage.getItem(getStorageKey());
@@ -76,6 +113,7 @@ const DetalleTickets = () => {
         const progreso = JSON.parse(progresoGuardado);
         setEtapaActual(progreso.etapa);
         setEstadoActual(progreso.estado);
+        etapaEfectiva = Number(progreso.etapa) || 1;
         console.log("Progreso cargado desde AsyncStorage:", progreso);
       }
       
@@ -101,16 +139,18 @@ const DetalleTickets = () => {
           url: `${page}/api/arsys/v1/entry/HPD:WorkLog?q=%27Incident%20Number%27%3D%22${params.incidentNumber}%22`,
           method: "GET",
           headers: headersList,
+          timeout: TIMEOUT_HELIX_MS,
         });
         
         console.log("Respuesta API WorkLog:", JSON.stringify(response.data));
       } else {
         // Consultar los WorkInfo existentes para órdenes de trabajo
         response = await axios.request({
-          url: `${page}/api/arsys/v1/entry/WOI:WorkInfo?q=%27Work%20Order%20ID%27%3D%22${params.incidentNumber}%22`,
-          method: "GET",
-          headers: headersList,
-        });
+            url: `${page}/api/arsys/v1/entry/WOI:WorkInfo?q=%27Work%20Order%20ID%27%3D%22${params.incidentNumber}%22`,
+            method: "GET",
+            headers: headersList,
+            timeout: TIMEOUT_HELIX_MS,
+          });
         
         console.log("Respuesta API WorkInfo:", JSON.stringify(response.data));
       }
@@ -133,19 +173,64 @@ const DetalleTickets = () => {
           } else if (descripcion.includes("Soporte finalizado")) {
             ultimaEtapa = Math.max(ultimaEtapa, 4);
             ultimoEstado = "Soporte finalizado";
-          } else if (descripcion.includes("Resolución:")) {
+          } else if (descripcion.includes(PREFIJO_RESOLUCION)) {
             ultimaEtapa = 5; // Completado
             ultimoEstado = "Resolución completada";
           }
         });
         
-        // Si la etapa determinada por la API es más avanzada que la guardada localmente, actualizamos
-        if (ultimaEtapa > etapaActual) {
+        // La etapa solo avanza aquí. El retroceso por cierre no confirmado lo
+        // resuelve la detección de más abajo.
+        if (ultimaEtapa > etapaEfectiva) {
+          etapaEfectiva = ultimaEtapa;
           setEtapaActual(ultimaEtapa);
           setEstadoActual(ultimoEstado);
-          
-          // Guardamos el nuevo progreso en AsyncStorage
           await guardarProgreso(ultimaEtapa, ultimoEstado);
+        }
+      }
+      
+      // Rescate de casos que quedaron marcados como completados en la app pero
+      // que nunca llegaron a cerrarse en Helix. En ese estado el caso reaparece
+      // en la lista con el formulario y el botón deshabilitados, sin forma de
+      // volver a guardarlo desde la app.
+      if (etapaEfectiva >= 5) {
+        const urlEstado = params.type === "ticket"
+          ? `${page}/api/arsys/v1/entry/HPD:Help%20Desk?q=%27Incident%20Number%27%3D%22${params.incidentNumber}%22&fields=values(Status)`
+          : `${page}/api/arsys/v1/entry/WOI:WorkOrder?q=%27Work%20Order%20ID%27%3D%22${params.incidentNumber}%22&fields=values(Status)`;
+
+        let estadoHelix = '';
+        try {
+          const estadoResponse = await axios.request({
+            url: urlEstado,
+            method: "GET",
+            headers: headersList,
+            timeout: TIMEOUT_HELIX_MS,
+          });
+
+          const entradas = estadoResponse.data?.entries;
+          if (Array.isArray(entradas) && entradas.length > 0) {
+            estadoHelix = String(entradas[0].values?.Status || '').trim();
+          }
+        } catch (error) {
+          // Si no se puede confirmar el estado en Helix no se toca la etapa: es
+          // preferible dejar el caso como está antes que reabrir uno que ya
+          // quedó cerrado correctamente.
+          console.log("No se pudo confirmar el estado en Helix; se conserva la etapa.");
+          return;
+        }
+
+        if (estadoHelix && !ESTADOS_FINALES.includes(normalizarEstadoHelix(estadoHelix))) {
+          console.log(
+            `Rescate: etapa 5 local pero estado "${estadoHelix}" en Helix. Se vuelve a la etapa 4.`
+          );
+          await AsyncStorage.removeItem(getStorageKey());
+          setEtapaActual(4);
+          setEstadoActual('Cierre no confirmado en Remedy');
+          Alert.alert(
+            'Cierre no confirmado',
+            'Este caso quedó marcado como completado en la app, pero en Remedy sigue ' +
+            `abierto (estado: ${estadoHelix}). Se habilitó el guardado para que puedas reintentarlo.`
+          );
         }
       }
     } catch (error) {
@@ -181,7 +266,9 @@ const DetalleTickets = () => {
       }
 
       // Obtener la lista de usuarios del backend
-      const backendUsers = await axios.get(`${backendUrl}/usuarios`);
+      const backendUsers = await axios.get(`${backendUrl}/usuarios`, {
+        timeout: TIMEOUT_BACKEND_MS,
+      });
       if (!Array.isArray(backendUsers.data)) {
         console.error('Error: La respuesta del backend no es un array', backendUsers.data);
         return;
@@ -221,7 +308,8 @@ const DetalleTickets = () => {
       }, {
         headers: {
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: TIMEOUT_BACKEND_MS,
       });
 
       console.log('Ubicación actualizada exitosamente');
@@ -234,10 +322,13 @@ const DetalleTickets = () => {
     setLoading(true);
     setEstadoActual(nuevoEstado);
 
-    // Actualizar la ubicación del usuario
-    await actualizarUbicacionUsuario();
-    
     try {
+      // La ubicación se actualiza dentro del try: si el GPS o el backend fallan
+      // el error cae en el catch común en vez de dejar la pantalla en carga
+      // infinita. La actualización de ubicación nunca debe impedir registrar
+      // el cambio de estado, por eso su propio fallo se ignora.
+      await actualizarUbicacionUsuario();
+
       // Obtener ubicación actual
       const coords = await obtenerUbicacion();
       
@@ -301,6 +392,7 @@ const DetalleTickets = () => {
         method: "POST",
         headers: headersList,
         data: bodyContent,
+        timeout: TIMEOUT_HELIX_MS,
       });
       
       console.log("Respuesta API:", response.data);
@@ -334,10 +426,12 @@ const DetalleTickets = () => {
     
     setLoading(true);
 
-    // Actualizar la ubicación del usuario
-    await actualizarUbicacionUsuario();
-    
     try {
+      // Dentro del try por el mismo motivo que en cambiarEstado: un fallo al
+      // actualizar la ubicación no debe dejar la pantalla colgada ni impedir
+      // guardar la resolución.
+      await actualizarUbicacionUsuario();
+
       // Obtener token almacenado
       const token = await AsyncStorage.getItem("token");
       
@@ -363,7 +457,7 @@ const DetalleTickets = () => {
           "values": {
             "Incident Number": params.incidentNumber,
             "Work Log Type": "Customer Communication",
-            "Detailed Description": `Resolución: ${resolucion}`,
+            "Detailed Description": `${PREFIJO_RESOLUCION} ${resolucion}`,
             "Secure Work Log": "No",
             "View Access": "Public"
           }
@@ -375,7 +469,7 @@ const DetalleTickets = () => {
         bodyContent = JSON.stringify({
           "values": {
             "Work Order ID": params.incidentNumber,
-            "Detailed Description": `Resolución: ${resolucion}`,
+            "Detailed Description": `${PREFIJO_RESOLUCION} ${resolucion}`,
             "Short Description": "Resolución del caso",
             "View Access": "Public"
           }
@@ -390,11 +484,18 @@ const DetalleTickets = () => {
         method: "POST",
         headers: headersList,
         data: bodyContent,
+        timeout: TIMEOUT_HELIX_MS,
       });
       
       console.log("Respuesta API Resolución:", response.data);
       
-      // Actualizar el estado según el tipo (ticket o work order)
+      // Actualizar el estado según el tipo (ticket o work order). Se registra si
+      // el cierre llegó a Helix: si falla, la app no debe avanzar a la etapa 5,
+      // porque eso dejaba el caso marcado como completado con el ticket abierto
+      // y sin forma de reintentar desde la app.
+      let estadoActualizado = false;
+      let motivoFallo = '';
+
       if (params.type === "ticket") {
         try {
           // 1. Primero consultar el Entry ID del incidente
@@ -402,6 +503,7 @@ const DetalleTickets = () => {
             url: `${page}/api/arsys/v1/entry/HPD:Help%20Desk?q=%27Incident%20Number%27%3D%22${params.incidentNumber}%22`,
             method: "GET",
             headers: headersList,
+            timeout: TIMEOUT_HELIX_MS,
           });
           
           console.log("Respuesta API Incidente:", JSON.stringify(incidentResponse.data));
@@ -425,19 +527,23 @@ const DetalleTickets = () => {
                     "Resolution": resolucion,
                     "Status_Reason": "Automated Resolution Reported"
                   }
-                })
+                }),
+                timeout: TIMEOUT_HELIX_MS,
               });
               
+              estadoActualizado = true;
               console.log("Respuesta API Actualización Estado Incidente:", JSON.stringify(updateResponse.data));
             } else {
-              console.error("No se pudo obtener el Entry ID del incidente");
+              motivoFallo = 'no se encontró el registro del incidente en Helix';
+              console.error(motivoFallo);
             }
           } else {
-            console.error("No se encontró el incidente");
+            motivoFallo = 'no se encontró el incidente';
+            console.error(motivoFallo);
           }
         } catch (updateError) {
+          motivoFallo = 'Helix no respondió al cerrar el incidente';
           console.error("Error al actualizar estado del incidente:", updateError);
-          // No interrumpimos el flujo principal si esta parte falla
         }
       } else {
         // Si es una orden de trabajo, actualizar su estado a Completed
@@ -447,6 +553,7 @@ const DetalleTickets = () => {
             url: `${page}/api/arsys/v1/entry/WOI:WorkOrder?q=%27Work%20Order%20ID%27%3D%22${params.incidentNumber}%22`,
             method: "GET",
             headers: headersList,
+            timeout: TIMEOUT_HELIX_MS,
           });
           
           console.log("Respuesta API Orden de Trabajo:", JSON.stringify(workOrderResponse.data));
@@ -469,23 +576,41 @@ const DetalleTickets = () => {
                     "Status": "Completed",
                     "chr_Resolution": resolucion
                   }
-                })
+                }),
+                timeout: TIMEOUT_HELIX_MS,
               });
               
+              estadoActualizado = true;
               console.log("Respuesta API Actualización Estado Orden de Trabajo:", JSON.stringify(updateResponse.data));
             } else {
-              console.error("No se pudo obtener el Request ID de la orden de trabajo");
+              motivoFallo = 'no se encontró el identificador de la orden de trabajo';
+              console.error(motivoFallo);
             }
           } else {
-            console.error("No se encontró la orden de trabajo");
+            motivoFallo = 'no se encontró la orden de trabajo';
+            console.error(motivoFallo);
           }
         } catch (updateError) {
+          motivoFallo = 'Helix no respondió al cerrar la orden de trabajo';
           console.error("Error al actualizar estado de la orden de trabajo:", updateError);
-          // No interrumpimos el flujo principal si esta parte falla
         }
       }
       
-      // Marcar como completado en AsyncStorage
+      if (!estadoActualizado) {
+        // La resolución quedó en el Work Log, pero el estado no se actualizó. Se
+        // mantiene la etapa 4 para que el botón siga activo y el técnico pueda
+        // reintentar; avanzar a la 5 dejaba el caso sin salida desde la app.
+        const detalle = motivoFallo || 'la actualización no se completó';
+        console.log(`Cierre no confirmado (${detalle}). Se conserva la etapa 4 para reintentar.`);
+        Alert.alert(
+          "Cierre no confirmado",
+          `La resolución se guardó, pero el estado del caso no se actualizó: ${detalle}.\n\n` +
+          "El caso sigue abierto en Remedy. Toca 'Guardar resolución' para reintentar."
+        );
+        return;
+      }
+      
+      // Solo con el cierre confirmado en Helix se marca el caso como completado.
       await guardarProgreso(5, "Resolución completada");
       
       Alert.alert("Éxito", "Resolución guardada correctamente", [
@@ -520,6 +645,14 @@ const DetalleTickets = () => {
           {params.type === "ticket" ? "Número de Incidente" : "Número de Orden"}: {params.incidentNumber}
         </Text>
         <Text style={styles.infoDetail}>Cliente: {params.cliente}</Text>
+        {params.visita && params.visita !== "0" ? (
+          <Text style={styles.visitaOrden}>
+            {params.visita}ª visita · Sede: {params.sede}
+          </Text>
+        ) : null}
+        {params.email && params.email !== "Sin correo" ? (
+          <Text style={styles.infoDetail}>Correo del cliente: {params.email}</Text>
+        ) : null}
         <Text style={[styles.infoDetail, { color: prioridadFormateada(params.priority).color }]}>
           Prioridad: {prioridadFormateada(params.priority).label}
         </Text>
@@ -756,6 +889,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginTop: 8,
     color: '#1976d2',
+  },
+  visitaOrden: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 4,
+    color: '#2e7d32',
   },
   botonesContainer: {
     flexDirection: 'column',

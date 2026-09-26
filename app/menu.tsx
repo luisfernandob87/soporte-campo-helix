@@ -180,7 +180,7 @@ const menu = () => {
     <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
       <Text style={styles.welcomeText}>Bienvenid@ 👋</Text>
       <Text style={styles.nameText}>{fullName || usuario}</Text>
-      
+
       {supportGroups.length > 0 && (
         <View style={styles.groupsContainer}>
           <Text style={styles.groupsTitle}>Grupos de Soporte:</Text>
