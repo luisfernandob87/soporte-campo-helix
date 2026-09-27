@@ -29,6 +29,22 @@ const MAX_RESULTADOS = 25;
 const EMPRESA = "Inversiones Centroamericanas, S.A.";
 const ORGANIZACION = "VPC";
 
+// Categorías con las que nacen los incidentes creados desde la app. En el API
+// la categoría operativa se llama "Categorization Tier N" y la de producto
+// "Product Categorization Tier N". La combinación está validada: es la misma
+// que quedó en el INC000000028617.
+// El tercer nivel de la operativa se deja vacío a propósito.
+const CATEGORIA_OPERATIVA: Record<number, string> = {
+  1: "Soporte Técnico",
+  2: "Asignar",
+};
+
+const CATEGORIA_PRODUCTO: Record<number, string> = {
+  1: "Servicios",
+  2: "Internos",
+  3: "Soporte Técnico",
+};
+
 type Prioridad = "Alta" | "Media" | "Baja";
 
 // La prioridad no es un dato suelto: en Remedy es el resultado de la matriz
@@ -288,6 +304,7 @@ const CrearIncidente = () => {
       // Remedy: NO se manda "Short Description" ni "Priority" (la prioridad la
       // calcula la matriz Urgencia x Impact) y sí van los tres campos de
       // compañía, que el formulario exige para resolver el grupo.
+      // Las categorías van fijas para que ningún caso nazca sin clasificar.
       const values: Record<string, string> = {
         Description: descripcionLimpia,
         Urgency: prioridadValores.urgency,
@@ -299,6 +316,12 @@ const CrearIncidente = () => {
         "Assigned Group": grupoElegido.nombre,
         Status: "In Progress",
         "Reported Source": "Direct Input",
+        // Categoría operativa y de producto.
+        "Categorization Tier 1": CATEGORIA_OPERATIVA[1],
+        "Categorization Tier 2": CATEGORIA_OPERATIVA[2],
+        "Product Categorization Tier 1": CATEGORIA_PRODUCTO[1],
+        "Product Categorization Tier 2": CATEGORIA_PRODUCTO[2],
+        "Product Categorization Tier 3": CATEGORIA_PRODUCTO[3],
         // Solicitante del caso.
         First_Name: first,
         Last_Name: last,
