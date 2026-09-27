@@ -6,6 +6,7 @@ import axios from 'axios'
 import * as Location from 'expo-location'
 import { getBackendUrl } from './services/locationService'
 import { prioridadFormateada } from './services/prioridad'
+import { COLORES, RADIO, OPACIDAD_PULSADO, estilos } from './theme'
 
 // Límite de espera de las peticiones. Sin un timeout explícito, axios espera
 // indefinidamente: si Helix o el backend se bloquean, el await no resuelve y el
@@ -64,6 +65,115 @@ const mensajeErrorHelix = (error: any): string => {
     ? (respuesta[0]?.messageAppendedText || respuesta[0]?.messageText)
     : (respuesta?.messageAppendedText || respuesta?.messageText);
   return texto || error?.message || 'error desconocido';
+};
+
+const PASOS = ['Inicio', 'Saliendo', 'En sitio', 'Finalizado', 'Resuelto'];
+
+/**
+ * Stepper de las 5 etapas del caso. Sustituye la barra con relleno, los 5 puntos
+ * sueltos y las etiquetas, que además de repetir la misma información, no se
+ * alineaban entre sí.
+ *
+ * La clave de que queden rectos: cada etapa es una columna con flex:1 y la
+ * línea se dibuja dentro de su propia columna (left:0 / right:0), de modo que
+ * los círculos caen siempre encima de ella sin calcular medidas a mano.
+ */
+const Stepper = ({ etapa, pendiente }: { etapa: number; pendiente: boolean }) => {
+  return (
+    <View style={stepStyles.contenedor}>
+      <View style={stepStyles.fila}>
+        {PASOS.map((etiqueta, indice) => {
+          const numero = indice + 1;
+          const completado = numero < etapa;
+          const actual = numero === etapa;
+          return (
+            <View key={etiqueta} style={stepStyles.paso}>
+              {indice < PASOS.length - 1 && (
+                <View
+                  style={[stepStyles.linea, completado && stepStyles.lineaHecha]}
+                  pointerEvents="none"
+                />
+              )}
+              <View
+                style={[
+                  stepStyles.circulo,
+                  completado && stepStyles.circuloHecho,
+                  actual && stepStyles.circuloActual,
+                ]}
+              >
+                <Text
+                  style={[
+                    stepStyles.circuloTexto,
+                    completado && stepStyles.circuloTextoHecho,
+                    actual && stepStyles.circuloTextoActual,
+                  ]}
+                >
+                  {completado ? '✓' : String(numero)}
+                </Text>
+              </View>
+              <Text
+                style={[stepStyles.etiqueta, actual && stepStyles.etiquetaActual]}
+                numberOfLines={1}
+              >
+                {etiqueta}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+      {pendiente && (
+        <View style={stepStyles.banda}>
+          <Text style={stepStyles.bandaTexto}>
+            Caso pendiente: registra la visita de nuevo
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+};
+
+/**
+ * Botón de una etapa del recorrido. El número es la etapa a la que lleva, así
+ * que el propio botón sabe si ya se pasó, si es el siguiente o si todavía no
+ * toca: antes esos tres casos se veían casi iguales.
+ */
+const BotonEtapa = ({
+  etapa,
+  numero,
+  texto,
+  onPress,
+  ancho,
+}: {
+  etapa: number;
+  numero: number;
+  texto: string;
+  onPress: () => void;
+  ancho?: boolean;
+}) => {
+  const disponibles = etapa === numero;
+  const completado = etapa > numero;
+
+  const estiloContenedor = !disponibles
+    ? completado
+      ? estilos.contornoExito
+      : estilos.neutro
+    : estilos.contornoPrimario;
+  const estiloTexto = !disponibles
+    ? completado
+      ? estilos.textoExito
+      : estilos.textoDeshabilitado
+    : estilos.textoPrimario;
+
+  return (
+    <TouchableOpacity
+      style={[estilos.botonBase, ancho && styles.botonFila, estiloContenedor]}
+      onPress={onPress}
+      disabled={!disponibles}
+      activeOpacity={OPACIDAD_PULSADO}
+    >
+      <Text style={estiloTexto}>{completado ? `✓ ${texto}` : texto}</Text>
+    </TouchableOpacity>
+  );
 };
 
 const DetalleTickets = () => {
@@ -943,81 +1053,54 @@ const DetalleTickets = () => {
         </View>
       )}
       
-      {/* Barra de progreso */}
-      <View style={styles.progressBarContainer}>
-        <View style={styles.progressBarLabels}>
-          <Text style={[styles.progressLabel, etapaActual >= 1 ? styles.progressLabelActive : null]}>Inicio</Text>
-          <Text style={[styles.progressLabel, etapaActual >= 2 ? styles.progressLabelActive : null]}>Saliendo</Text>
-          <Text style={[styles.progressLabel, etapaActual >= 3 ? styles.progressLabelActive : null]}>En sitio</Text>
-          <Text style={[styles.progressLabel, etapaActual >= 4 ? styles.progressLabelActive : null]}>Finalizado</Text>
-          <Text style={[styles.progressLabel, etapaActual >= 5 ? styles.progressLabelActive : null]}>Resuelto</Text>
-        </View>
-        <View style={styles.progressBarBackground}>
-          <View style={[styles.progressBarFill, { width: `${(etapaActual - 1) * 25}%` }]} />
-        </View>
-        <View style={styles.progressBarSteps}>
-          <View style={[styles.progressStep, etapaActual >= 1 ? styles.progressStepCompleted : null]} />
-          <View style={[styles.progressStep, etapaActual >= 2 ? styles.progressStepCompleted : null]} />
-          <View style={[styles.progressStep, etapaActual >= 3 ? styles.progressStepCompleted : null]} />
-          <View style={[styles.progressStep, etapaActual >= 4 ? styles.progressStepCompleted : null]} />
-          <View style={[styles.progressStep, etapaActual >= 5 ? styles.progressStepCompleted : null]} />
-        </View>
-      </View>
+      <Stepper etapa={etapaActual} pendiente={estadoActual === 'Pendiente registrado'} />
       
       <View style={styles.botonesContainer}>
-        <TouchableOpacity 
-          style={[
-            styles.botonEstado, 
-            estadoActual === "Saliendo a sitio" ? styles.botonActivo : null,
-            etapaActual !== 1 ? styles.botonDeshabilitado : null
-          ]} 
-          onPress={() => etapaActual === 1 ? cambiarEstado("Saliendo a sitio", 1) : null}
-          disabled={etapaActual !== 1}
-        >
-          <Text style={[styles.botonTexto, etapaActual !== 1 ? styles.textoDeshabilitado : null]}>Saliendo a sitio</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={[
-            styles.botonEstado, 
-            estadoActual === "En sitio" ? styles.botonActivo : null,
-            etapaActual !== 2 ? styles.botonDeshabilitado : null
-          ]} 
-          onPress={() => etapaActual === 2 ? cambiarEstado("En sitio", 2) : null}
-          disabled={etapaActual !== 2}
-        >
-          <Text style={[styles.botonTexto, etapaActual !== 2 ? styles.textoDeshabilitado : null]}>En sitio</Text>
-        </TouchableOpacity>
-        
+        <BotonEtapa
+          etapa={etapaActual}
+          numero={1}
+          texto="Saliendo a sitio"
+          onPress={() => cambiarEstado("Saliendo a sitio", 1)}
+        />
+
+        <BotonEtapa
+          etapa={etapaActual}
+          numero={2}
+          texto="En sitio"
+          onPress={() => cambiarEstado("En sitio", 2)}
+        />
+
         {/* "Soporte finalizado" y "Pendiente" compiten entre sí: registrar la
             nota de pendiente no avanza la etapa, solo cambia el formulario que
             se muestra abajo. */}
         <View style={styles.botonesFila}>
-          <TouchableOpacity 
-            style={[
-              styles.botonEstado, 
-              styles.botonFila,
-              estadoActual === "Soporte finalizado" ? styles.botonActivo : null,
-              etapaActual !== 3 ? styles.botonDeshabilitado : null
-            ]} 
-            onPress={() => etapaActual === 3 ? cambiarEstado("Soporte finalizado", 3) : null}
-            disabled={etapaActual !== 3}
-          >
-            <Text style={[styles.botonTexto, etapaActual !== 3 ? styles.textoDeshabilitado : null]}>Soporte finalizado</Text>
-          </TouchableOpacity>
+          <BotonEtapa
+            etapa={etapaActual}
+            numero={3}
+            texto="Soporte finalizado"
+            onPress={() => cambiarEstado("Soporte finalizado", 3)}
+            ancho
+          />
 
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
-              styles.botonEstado,
+              estilos.botonBase,
               styles.botonFila,
-              styles.botonPendiente,
-              modoPendiente ? styles.botonPendienteActivo : null,
-              etapaActual !== 3 ? styles.botonDeshabilitado : null
-            ]} 
-            onPress={() => etapaActual === 3 ? cambiarModoPendiente(true) : null}
+              // El pendiente va siempre en ámbar porque su texto es blanco; el
+              // contorno marca que el formulario ya está en ese modo.
+              estilos.alerta,
+              modoPendiente && styles.botonPendienteActivo,
+              etapaActual !== 3 && estilos.deshabilitado,
+            ]}
+            onPress={() => cambiarModoPendiente(true)}
             disabled={etapaActual !== 3}
+            activeOpacity={OPACIDAD_PULSADO}
           >
-            <Text style={[styles.botonTexto, styles.textoBotonPendiente, etapaActual !== 3 ? styles.textoDeshabilitado : null]}>Pendiente</Text>
+            <Text
+              style={[estilos.textoClaro, etapaActual !== 3 && estilos.textoDeshabilitado]}
+            >
+              Pendiente
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1043,24 +1126,26 @@ const DetalleTickets = () => {
 
           {modoPendiente && (
             <TouchableOpacity
-              style={[styles.cancelarButton, !formularioEditable ? styles.botonDeshabilitado : null]}
+              style={[styles.cancelarButton, !formularioEditable && estilos.deshabilitado]}
               onPress={() => cambiarModoPendiente(false)}
               disabled={!formularioEditable}
+              activeOpacity={OPACIDAD_PULSADO}
             >
-              <Text style={[styles.cancelarButtonText, !formularioEditable ? styles.textoDeshabilitado : null]}>Cancelar</Text>
+              <Text style={[styles.cancelarButtonText, !formularioEditable && estilos.textoDeshabilitado]}>Cancelar</Text>
             </TouchableOpacity>
           )}
           
           <TouchableOpacity 
             style={[
               styles.guardarButton,
-              modoPendiente ? styles.guardarPendiente : null,
-              !formularioEditable ? styles.botonDeshabilitado : null
+              modoPendiente ? estilos.alerta : estilos.exito,
+              !formularioEditable && estilos.deshabilitado
             ]} 
             onPress={modoPendiente ? registrarPendiente : guardarResolucion}
             disabled={!formularioEditable}
+            activeOpacity={OPACIDAD_PULSADO}
           >
-            <Text style={[styles.guardarButtonText, !formularioEditable ? styles.textoDeshabilitadoGuardar : null]}>
+            <Text style={[styles.guardarButtonText, !formularioEditable && styles.textoDeshabilitadoGuardar]}>
               {modoPendiente ? "Registrar pendiente" : "Guardar resolución"}
             </Text>
           </TouchableOpacity>
@@ -1076,52 +1161,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
-  },
-  progressBarContainer: {
-    padding: 16,
-    marginBottom: 10,
-  },
-  progressBarBackground: {
-    height: 8,
-    backgroundColor: '#e0e0e0',
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginVertical: 8,
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#1976d2',
-    borderRadius: 4,
-  },
-  progressBarSteps: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: -12,
-  },
-  progressStep: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#e0e0e0',
-    borderWidth: 2,
-    borderColor: '#fff',
-  },
-  progressStepCompleted: {
-    backgroundColor: '#1976d2',
-  },
-  progressBarLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  progressLabel: {
-    fontSize: 12,
-    color: '#757575',
-    textAlign: 'center',
-  },
-  progressLabelActive: {
-    color: '#1976d2',
-    fontWeight: 'bold',
   },
   loadingContainer: {
     position: 'absolute',
@@ -1209,9 +1248,7 @@ const styles = StyleSheet.create({
     color: '#2e7d32',
   },
   botonesContainer: {
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    padding: 16,
+    paddingHorizontal: 16,
     gap: 10,
   },
   botonesFila: {
@@ -1221,39 +1258,9 @@ const styles = StyleSheet.create({
   botonFila: {
     flex: 1,
   },
-  // Ámbar siempre: el texto va en blanco y sobre el gris del resto de botones
-  // no se leería. El contorno marca que el formulario está en modo pendiente.
-  botonPendiente: {
-    backgroundColor: '#ef6c00',
-  },
   botonPendienteActivo: {
-    backgroundColor: '#e65100',
     borderWidth: 2,
-    borderColor: '#bf360c',
-  },
-  textoBotonPendiente: {
-    color: '#fff',
-  },
-  botonEstado: {
-    backgroundColor: '#e0e0e0',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  botonActivo: {
-    backgroundColor: '#1976d2',
-  },
-  botonTexto: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  botonDeshabilitado: {
-    backgroundColor: '#f0f0f0',
-    opacity: 0.6,
-  },
-  textoDeshabilitado: {
-    color: '#999',
+    borderColor: COLORES.alertaOscuro,
   },
   textoDeshabilitadoGuardar: {
     color: '#fff',
@@ -1281,30 +1288,110 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   cancelarButton: {
-    backgroundColor: '#e0e0e0',
-    padding: 12,
-    borderRadius: 8,
+    backgroundColor: COLORES.deshabilitado,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: RADIO.md,
     alignItems: 'center',
     marginTop: 16,
   },
   cancelarButtonText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#333',
+    color: COLORES.textoPrimario,
   },
   guardarButton: {
-    backgroundColor: '#4caf50',
-    padding: 16,
-    borderRadius: 8,
+    paddingVertical: 14,
+    borderRadius: RADIO.md,
     alignItems: 'center',
     marginTop: 16,
   },
-  guardarPendiente: {
-    backgroundColor: '#ef6c00',
-  },
   guardarButtonText: {
-    color: '#fff',
+    color: COLORES.superficie,
     fontSize: 16,
     fontWeight: 'bold',
+  },
+})
+
+const stepStyles = StyleSheet.create({
+  contenedor: {
+    backgroundColor: COLORES.superficie,
+    paddingTop: 14,
+    paddingBottom: 16,
+    marginBottom: 8,
+  },
+  fila: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+  },
+  paso: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  // La línea se dibuja dentro de cada columna, así que los círculos caen
+  // siempre encima sin calcular medidas. top 12 es el centro del círculo
+  // (28/2) menos la mitad del grosor.
+  linea: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 12,
+    height: 4,
+    backgroundColor: COLORES.borde,
+  },
+  lineaHecha: {
+    backgroundColor: COLORES.exito,
+  },
+  circulo: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORES.deshabilitado,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Por encima de la línea, que es un elemento absoluto.
+    zIndex: 1,
+  },
+  circuloHecho: {
+    backgroundColor: COLORES.exito,
+  },
+  circuloActual: {
+    backgroundColor: COLORES.primario,
+    borderWidth: 3,
+    borderColor: COLORES.primarioClaro,
+  },
+  circuloTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORES.textoTerciario,
+  },
+  circuloTextoHecho: {
+    color: COLORES.superficie,
+  },
+  circuloTextoActual: {
+    color: COLORES.superficie,
+  },
+  etiqueta: {
+    marginTop: 8,
+    fontSize: 11,
+    color: COLORES.textoSecundario,
+    textAlign: 'center',
+  },
+  etiquetaActual: {
+    color: COLORES.primario,
+    fontWeight: '700',
+  },
+  banda: {
+    marginTop: 14,
+    marginHorizontal: 16,
+    padding: 10,
+    borderRadius: RADIO.sm,
+    backgroundColor: COLORES.alertaFondo,
+  },
+  bandaTexto: {
+    color: COLORES.alertaTexto,
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 })

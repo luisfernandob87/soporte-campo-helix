@@ -174,7 +174,9 @@ export default function HomeScreen() {
     
     const submit = () => {
       
-      if (usuario == "" || password == "") {
+      // El campo ya se limpia solo mientras se escribe; el trim de aquí sólo
+      // cubre el caso de que quede un usuario de puro espacio.
+      if (usuario.trim() === "" || password === "") {
         Alert.alert("Ingrese usuario y contraseña");
       } else {
         setLoading(true);
@@ -339,7 +341,13 @@ export default function HomeScreen() {
               style={styles.inputs}
               value={usuario}
               placeholder="Usuario"
-              onChangeText={setUsuario}
+              // Los logins de Remedy van en minúscula y sin espacios: muchos
+              // teclados capitalizan la primera letra y otros dejan un espacio
+              // al final. Se normaliza al escribir para que el inicio de sesión
+              // no falle por eso.
+              onChangeText={(texto) => setUsuario(texto.trim().toLowerCase())}
+              autoCapitalize="none"
+              autoCorrect={false}
             />
             <TextInput
               style={styles.inputs}

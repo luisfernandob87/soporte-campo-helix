@@ -6,6 +6,7 @@ import { useRouter } from "expo-router"
 import { startTracking, stopTracking } from "./services/locationService"
 import { detenerCanalNotificaciones } from "./services/notificacionesService"
 import { obtenerGruposRuta, GrupoRuta } from "./services/gruposSoporte"
+import { COLORES, RADIO, OPACIDAD_PULSADO, estilos } from "./theme"
 
 const Menu = () => {
   const [usuario, setUsuario] = useState("");
@@ -109,14 +110,19 @@ const Menu = () => {
     };
     
     return (
-      <TouchableOpacity style={styles.groupItem} onPress={handleGroupPress}>
+      <TouchableOpacity
+        style={styles.groupItem}
+        onPress={handleGroupPress}
+        activeOpacity={OPACIDAD_PULSADO}
+      >
         <Text style={styles.groupText}>{item.nombre}</Text>
+        <Text style={styles.groupChevron}>›</Text>
       </TouchableOpacity>
     );
   };
 
   return (
-    <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+    <View style={styles.pantalla}>
       <Text style={styles.welcomeText}>Bienvenid@ 👋</Text>
       <Text style={styles.nameText}>{fullName || usuario}</Text>
 
@@ -128,23 +134,29 @@ const Menu = () => {
             renderItem={renderSupportGroup}
             keyExtractor={(item: GrupoRuta) => item.id}
             style={styles.groupsList}
+            contentContainerStyle={styles.groupsListContent}
+            showsVerticalScrollIndicator={false}
           />
         </View>
       )}
 
-      <TouchableOpacity
-        style={styles.botonAzul}
-        onPress={() => router.push("/crearIncidente")}
-      >
-        <Text style={styles.botonAzulTexto}>Crear Incidente</Text>
-      </TouchableOpacity>
+      <View style={styles.pie}>
+        <TouchableOpacity
+          style={[estilos.botonBase, estilos.primario, styles.botonPie]}
+          onPress={() => router.push("/crearIncidente")}
+          activeOpacity={OPACIDAD_PULSADO}
+        >
+          <Text style={estilos.textoClaro}>Crear Incidente</Text>
+        </TouchableOpacity>
 
-      <TouchableOpacity
-        style={[styles.botonAzul, styles.cerrarSesion]}
-        onPress={handleLogout}
-      >
-        <Text style={styles.botonAzulTexto}>Cerrar Sesión</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={[estilos.botonBase, estilos.peligro, styles.botonPie]}
+          onPress={handleLogout}
+          activeOpacity={OPACIDAD_PULSADO}
+        >
+          <Text style={estilos.textoClaro}>Cerrar Sesión</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   )
 }
@@ -152,6 +164,15 @@ const Menu = () => {
 export default Menu
 
 const styles = StyleSheet.create({
+  // El menú ya no se centra: la lista de grupos toma el espacio disponible y
+  // scrollea, y los botones quedan siempre al fondo. Antes el centrado peleaba
+  // con el scroll en cuanto había más de dos grupos.
+  pantalla: {
+    flex: 1,
+    backgroundColor: COLORES.superficieApagada,
+    paddingTop: 50,
+    paddingHorizontal: 20,
+  },
   welcomeText: {
     fontSize: 24,
     fontWeight: 'bold',
@@ -159,59 +180,60 @@ const styles = StyleSheet.create({
   },
   nameText: {
     fontSize: 18,
-    marginBottom: 10,
-    color: '#1976d2'
+    marginBottom: 14,
+    color: COLORES.primario
   },
   groupsContainer: {
-    width: '80%',
-    marginBottom: 20,
-    alignItems: 'center'
+    flex: 1,
+    width: '100%',
   },
   groupsTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 5,
-    color: '#333',
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: COLORES.textoSecundario,
   },
   groupsList: {
-    width: '100%',
-    maxHeight: '100%',
+    flex: 1,
+  },
+  groupsListContent: {
+    paddingBottom: 12,
   },
   groupItem: {
     flexDirection: 'row',
-    padding: 8,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 5,
-    marginBottom: 20,
-    justifyContent: 'center',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORES.superficie,
+    borderRadius: RADIO.md,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: COLORES.borde,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 8,
   },
   groupText: {
-    fontSize: 14,
-    color: '#333'
+    flex: 1,
+    fontSize: 15,
+    color: COLORES.textoPrimario,
+  },
+  groupChevron: {
+    fontSize: 22,
+    lineHeight: 24,
+    color: COLORES.textoTerciario,
+    marginLeft: 12,
   },
   roleText: {
     fontSize: 12,
-    color: '#666',
+    color: COLORES.textoSecundario,
     fontStyle: 'italic'
   },
-  // Mismo estilo para los dos botones del pie. El de cerrar sesión va en rojo
-  // para que no se confunda con una acción más del flujo de trabajo.
-  botonAzul: {
-    backgroundColor: '#1976d2',
-    borderRadius: 8,
-    paddingVertical: 14,
-    paddingHorizontal: 22,
+  pie: {
+    alignItems: 'center',
+    paddingBottom: 28,
+    paddingTop: 8,
+  },
+  botonPie: {
+    minWidth: 200,
     marginBottom: 12,
-    alignSelf: 'center',
   },
-  cerrarSesion: {
-    backgroundColor: '#d32f2f',
-  },
-  botonAzulTexto: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  }
 })
