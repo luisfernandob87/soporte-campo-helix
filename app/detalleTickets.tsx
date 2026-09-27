@@ -78,6 +78,11 @@ const DetalleTickets = () => {
     priority: string;
     visita: string;
     sede: string;
+    // Los manda el alta de incidente: el caso ya existe, así que "Volver" va a
+    // la lista del grupo en vez de regresar al formulario de creación.
+    volverA?: string;
+    groupId?: string;
+    groupName?: string;
   }>();
 
   const [resolucion, setResolucion] = useState('');
@@ -877,6 +882,17 @@ const DetalleTickets = () => {
   const formularioEditable = etapaActual === 4 || (modoPendiente && etapaActual === 3);
 
   const handleBack = () => {
+    // Si el caso se creó desde la app, el formulario ya se quedó atrás: se
+    // regresa a la lista del grupo, que es donde ahora vive el caso. Se usa
+    // replace para no dejar el alta en el historial del botón atrás del
+    // teléfono.
+    if (params.volverA === 'tickets' && params.groupId) {
+      router.replace({
+        pathname: '/tickets',
+        params: { groupId: params.groupId, groupName: params.groupName || '' },
+      });
+      return;
+    }
     router.back();
   };
 

@@ -3,7 +3,7 @@ import { useRouter } from "expo-router";
 import { useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
-import logo from "../assets/images/VPC_LOGO_texto_vertical.png";
+import logo from "../assets/images/logo.png";
 import * as Location from 'expo-location';
 import { getBackendUrl } from "./services/locationService";
 import { iniciarCanalNotificaciones } from "./services/notificacionesService";
@@ -329,7 +329,10 @@ export default function HomeScreen() {
   return (
     <View style={{ flex: 1, justifyContent: "center", alignItems: "center", gap: 10}}>
             <Image source={logo} 
-            style={{ width: 150, height: 150 }}
+            // El logo es horizontal (1200x638): la caja va en la misma proporción
+            // para que no se aplaste. Antes usaba un cuadrado de 150x150 y el
+            // logo quedaba de 150x80, casi ilegible.
+            style={{ width: 260, height: 138 }}
             resizeMode="contain"
             />
        <TextInput

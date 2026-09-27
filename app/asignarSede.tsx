@@ -21,6 +21,13 @@ const AsignarSede = () => {
     sedeId: string;
     groupId: string;
     groupName: string;
+    // Opcionales: los envía el alta de incidente para que, tras guardar la sede,
+    // la pantalla siga al detalle del caso en vez de volver atrás.
+    incidentNumber?: string;
+    cliente?: string;
+    email?: string;
+    priority?: string;
+    continuarA?: string;
   }>();
 
   const [agencias, setAgencias] = useState<Agencia[]>([]);
@@ -77,6 +84,29 @@ const AsignarSede = () => {
       });
       Alert.alert("Listo", `Agencia asignada a ${params.dwpSrid}`);
       await new Promise((resolve) => setTimeout(resolve, 1200));
+      // Si viene del alta de incidente, se sigue al detalle para registrar la
+      // visita; si no, se comporta como siempre y sólo vuelve atrás.
+      if (params.continuarA === "detalle" && params.incidentNumber) {
+        router.replace({
+          pathname: "/detalleTickets",
+          params: {
+            id: params.incidentNumber,
+            dwpSrid: params.dwpSrid,
+            type: params.tipo,
+            incidentNumber: params.incidentNumber,
+            cliente: params.cliente || "",
+            email: params.email || "",
+            priority: params.priority || "",
+            sede: sedeSeleccionada ? sedeSeleccionada.nombre : "",
+            // El caso se acaba de crear, así que su "Volver" no debe regresar al
+            // formulario: se va a la lista del grupo donde ya quedó el caso.
+            volverA: "tickets",
+            groupId: params.groupId,
+            groupName: params.groupName,
+          },
+        });
+        return;
+      }
       router.back();
     } catch (error) {
       console.error("Error al asignar agencia:", error);

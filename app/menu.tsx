@@ -1,15 +1,16 @@
-import { Button, StyleSheet, Text, View, Alert, FlatList, TouchableOpacity } from 'react-native'
-import React, { useState, useEffect } from 'react'
+import { StyleSheet, Text, View, Alert, FlatList, TouchableOpacity } from 'react-native'
+import React, { useState, useEffect } from "react"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import axios from "axios"
 import { useRouter } from "expo-router"
 import { startTracking, stopTracking } from "./services/locationService"
 import { detenerCanalNotificaciones } from "./services/notificacionesService"
+import { obtenerGruposRuta, GrupoRuta } from "./services/gruposSoporte"
 
-const menu = () => {
+const Menu = () => {
   const [usuario, setUsuario] = useState("");
   const [fullName, setFullName] = useState("");
-  const [supportGroups, setSupportGroups] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [supportGroups, setSupportGroups] = useState<GrupoRuta[]>([]);
   const page = "https://servicedesk-dev-is.onbmc.com";
   const router = useRouter();
 
@@ -46,79 +47,14 @@ const menu = () => {
             if (userData["Full Name"]) {
               setFullName(userData["Full Name"]);
             }            
-              // Hacer la petición para obtener los grupos de soporte
-              try {
-                const supportGroupResponse = await axios.request({
-                  url: `${page}/api/arsys/v1.0/entry/CTM:Support Group Association?q=%27Login%20ID%27%3D%22${username}%22`,
-                  method: "GET",
-                  headers: headersList,
-                });
-                
-                console.log("Respuesta grupos de soporte:", JSON.stringify(supportGroupResponse.data));
-                
-                // Extraer los grupos de soporte
-                if (supportGroupResponse.data && supportGroupResponse.data.entries) {
-                  // Primero obtenemos los IDs de los grupos
-                  const groupsData = supportGroupResponse.data.entries.map((entry: { values: { [key: string]: string } }) => ({
-                    id: entry.values["Support Group ID"],
-                    tempName: entry.values["Support Group Name"] || entry.values["Support Group ID"],
-                    
-                  }));
-                  
-                  // Ahora hacemos peticiones para obtener el nombre completo de cada grupo
-                  const fetchGroupDetails = async () => {
-                    const updatedGroups = [];
-                    
-                    for (const group of groupsData) {
-                      try {
-                        // Hacer petición para obtener detalles del grupo por su ID
-                        const groupDetailResponse = await axios.request({
-                          url: `${page}/api/arsys/v1.0/entry/CTM:Support Group?q=%27Support%20Group%20ID%27%3D%22${group.id}%22`,
-                          method: "GET",
-                          headers: headersList,
-                        });
-                        
-                        console.log(`Respuesta detalle grupo ${group.id}:`, JSON.stringify(groupDetailResponse.data));
-                        
-                        // Extraer el nombre completo del grupo
-                        if (groupDetailResponse.data && 
-                            groupDetailResponse.data.entries && 
-                            groupDetailResponse.data.entries.length > 0 &&
-                            groupDetailResponse.data.entries[0].values["Support Group Name"]) {
-                          
-                          updatedGroups.push({
-                            id: group.id,
-                            name: groupDetailResponse.data.entries[0].values["Support Group Name"],
-                            role: groupDetailResponse.data.entries[0].values["Support Group Role"] || "Unknown Role",
-                          });
-                        } else {
-                          // Si no se encuentra el nombre, usar el nombre temporal
-                          updatedGroups.push({
-                            id: group.id,
-                            name: group.tempName,
-                            role: "Unknown Role",
-                          });
-                        }
-                      } catch (error) {
-                        console.error(`Error al obtener detalles del grupo ${group.id}:`, error);
-                        // En caso de error, usar el nombre temporal
-                        updatedGroups.push({
-                          id: group.id,
-                          name: group.tempName,
-                          role: "Unknown Role",
-                        });
-                      }
-                    }
-                    
-                    // Actualizar el estado con los grupos completos
-                    setSupportGroups(updatedGroups.filter(group => group.name.startsWith("Ruta")));
-                  };
-                  
-                  fetchGroupDetails();
-                }
-              } catch (error) {
-                console.error("Error al obtener grupos de soporte:", error);
-              }
+            // Los grupos Ruta del técnico se resuelven en el helper compartido,
+            // que también usa la pantalla de alta de incidentes.
+            try {
+              const grupos = await obtenerGruposRuta(token, username);
+              setSupportGroups(grupos);
+            } catch (error) {
+              console.error("Error al obtener grupos de soporte:", error);
+            }
           }
         }
       } catch (error) {
@@ -145,8 +81,11 @@ const menu = () => {
     
     iniciarTracking();
     
-    // Detener el tracking al desmontar la pantalla
-    return () => stopTracking();
+    // Detener el tracking al desmontar la pantalla. Se envuelve en un bloque
+    // porque el cleanup del useEffect no puede devolver una promesa.
+    return () => {
+      stopTracking();
+    };
   }, []);
   
   const handleLogout = () => {
@@ -160,18 +99,18 @@ const menu = () => {
   };
 
   // Renderizar un item de grupo de soporte
-  const renderSupportGroup = ({ item }: { item: { id: string; name: string; role: string; } }) => {
+  const renderSupportGroup = ({ item }: { item: GrupoRuta }) => {
     const handleGroupPress = () => {
       // Navegar a la pantalla de tickets con el ID del grupo y el nombre de usuario
       router.push({
         pathname: "/tickets",
-        params: { groupId: item.id, groupName: item.name }
+        params: { groupId: item.id, groupName: item.nombre }
       });
     };
     
     return (
       <TouchableOpacity style={styles.groupItem} onPress={handleGroupPress}>
-        <Text style={styles.groupText}>{item.name}</Text>
+        <Text style={styles.groupText}>{item.nombre}</Text>
       </TouchableOpacity>
     );
   };
@@ -187,18 +126,30 @@ const menu = () => {
           <FlatList
             data={supportGroups}
             renderItem={renderSupportGroup}
-            keyExtractor={(item: { id: string; name: string;}) => item.id}
+            keyExtractor={(item: GrupoRuta) => item.id}
             style={styles.groupsList}
           />
         </View>
       )}
-      
-      <Button title="Cerrar Sesion" onPress={handleLogout} />
+
+      <TouchableOpacity
+        style={styles.botonAzul}
+        onPress={() => router.push("/crearIncidente")}
+      >
+        <Text style={styles.botonAzulTexto}>Crear Incidente</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.botonAzul, styles.cerrarSesion]}
+        onPress={handleLogout}
+      >
+        <Text style={styles.botonAzulTexto}>Cerrar Sesión</Text>
+      </TouchableOpacity>
     </View>
   )
 }
 
-export default menu
+export default Menu
 
 const styles = StyleSheet.create({
   welcomeText: {
@@ -244,5 +195,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
     fontStyle: 'italic'
+  },
+  // Mismo estilo para los dos botones del pie. El de cerrar sesión va en rojo
+  // para que no se confunda con una acción más del flujo de trabajo.
+  botonAzul: {
+    backgroundColor: '#1976d2',
+    borderRadius: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+    marginBottom: 12,
+    alignSelf: 'center',
+  },
+  cerrarSesion: {
+    backgroundColor: '#d32f2f',
+  },
+  botonAzulTexto: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   }
 })
