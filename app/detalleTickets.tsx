@@ -37,6 +37,35 @@ const normalizarEstadoHelix = (estado: string) =>
 // señal de que el técnico ya terminó el caso.
 const PREFIJO_RESOLUCION = 'Resolución:';
 
+// Texto con el que la app escribe la nota de pendiente. Además de documentar el
+// caso, reinicia el flujo: el técnico puede volver a registrar la visita.
+const PREFIJO_PENDIENTE = 'Nota del pendiente:';
+
+// Estado en Helix para un caso que quedó pendiente. No es un estado final, así
+// que el caso sigue apareciendo en la lista del técnico y en la ruta del día.
+const ESTADO_PENDIENTE = 'Pending';
+
+// Motivo de estado que acompaña al Pending. Los dos formularios lo exigen: sin él
+// Helix rechaza la actualización con un 500 ("The Status Reason field requires a
+// value when the status is either pending or resolved"). Cada formulario lo
+// nombra distinto, así que va aparte del estado.
+const MOTIVO_PENDIENTE = 'Client Action Required';
+const CAMPO_MOTIVO_ESTADO = {
+  ticket: 'Status_Reason',
+  workOrder: 'Status Reason',
+} as const;
+
+// Texto que devuelve Helix cuando rechaza una actualización. Es la única pista
+// útil si el PUT falla (motivo de estado obligatorio, combinación inválida, usuario
+// no registrado...) y evita tener que andar leyendo la consola.
+const mensajeErrorHelix = (error: any): string => {
+  const respuesta = error?.response?.data;
+  const texto = Array.isArray(respuesta)
+    ? (respuesta[0]?.messageAppendedText || respuesta[0]?.messageText)
+    : (respuesta?.messageAppendedText || respuesta?.messageText);
+  return texto || error?.message || 'error desconocido';
+};
+
 const DetalleTickets = () => {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -52,6 +81,8 @@ const DetalleTickets = () => {
   }>();
 
   const [resolucion, setResolucion] = useState('');
+  const [notaPendiente, setNotaPendiente] = useState('');
+  const [modoPendiente, setModoPendiente] = useState(false);
   const [estadoActual, setEstadoActual] = useState('');
   const [loading, setLoading] = useState(false);
   const [ubicacion, setUbicacion] = useState<{latitude: number; longitude: number} | null>(null);
@@ -105,6 +136,9 @@ const DetalleTickets = () => {
     // dicen los Work Logs. Se lleva aparte porque el estado de React todavía
     // vale 1 dentro de esta función al montarse por primera vez.
     let etapaEfectiva = 1;
+    // Momento en que se guardó ese progreso local. Se contrasta con la fecha de
+    // la última nota de pendiente para saber si el reinicio es más nuevo.
+    let etapaGuardadaEn = 0;
     try {
       // Primero intentamos cargar desde AsyncStorage
       const progresoGuardado = await AsyncStorage.getItem(getStorageKey());
@@ -114,6 +148,8 @@ const DetalleTickets = () => {
         setEtapaActual(progreso.etapa);
         setEstadoActual(progreso.estado);
         etapaEfectiva = Number(progreso.etapa) || 1;
+        const guardadoEn = Date.parse(String(progreso.timestamp || ''));
+        etapaGuardadaEn = isNaN(guardadoEn) ? 0 : guardadoEn;
         console.log("Progreso cargado desde AsyncStorage:", progreso);
       }
       
@@ -157,34 +193,56 @@ const DetalleTickets = () => {
       
       // Analizar las entradas para determinar la etapa actual
       if (response.data && response.data.entries && response.data.entries.length > 0) {
+        // Se recorren en orden cronológico porque la última marca que se
+        // reconoce es la que manda: la nota de pendiente reinicia el flujo, así
+        // que solo cuentan las entradas posteriores a ella.
+        const fechaMarca = (entry: any) => {
+          const v = entry.values || {};
+          const crudo = v['Work Log Date'] || v['Work Log Submit Date'] || v['Submit Date'] || '';
+          const ms = Date.parse(String(crudo));
+          return isNaN(ms) ? 0 : ms;
+        };
+        const ordenadas = [...response.data.entries].sort((a: any, b: any) => fechaMarca(a) - fechaMarca(b));
+
         let ultimaEtapa = 1;
         let ultimoEstado = "";
-        
-        // Recorremos todas las entradas para encontrar el último estado registrado
-        response.data.entries.forEach((entry: any) => {
-          const descripcion = entry.values["Detailed Description"] || "";
-          
-          if (descripcion.includes("Saliendo a sitio")) {
-            ultimaEtapa = Math.max(ultimaEtapa, 2);
-            ultimoEstado = "Saliendo a sitio";
-          } else if (descripcion.includes("En sitio")) {
-            ultimaEtapa = Math.max(ultimaEtapa, 3);
-            ultimoEstado = "En sitio";
-          } else if (descripcion.includes("Soporte finalizado")) {
-            ultimaEtapa = Math.max(ultimaEtapa, 4);
-            ultimoEstado = "Soporte finalizado";
-          } else if (descripcion.includes(PREFIJO_RESOLUCION)) {
+        let fechaUltimoPendiente = 0;
+
+        ordenadas.forEach((entry: any) => {
+          const descripcion = String(entry.values["Detailed Description"] || "");
+          // Solo cuentan las notas que escribió la app, que siempre empiezan por
+          // la frase. Así se ignoran los Work Logs que genera Helix (Assigned To:,
+          // Status Marked:, Priority Marked:) y también una nota redactada por
+          // otra persona que mencione la frase dentro de un párrafo, por ejemplo
+          // "el cliente no se encuentra En sitio".
+          if (descripcion.startsWith(PREFIJO_PENDIENTE)) {
+            ultimaEtapa = 1;
+            ultimoEstado = "Pendiente registrado";
+            fechaUltimoPendiente = fechaMarca(entry);
+          } else if (descripcion.startsWith(PREFIJO_RESOLUCION)) {
             ultimaEtapa = 5; // Completado
             ultimoEstado = "Resolución completada";
+          } else if (descripcion.startsWith("Soporte finalizado")) {
+            ultimaEtapa = 4;
+            ultimoEstado = "Soporte finalizado";
+          } else if (descripcion.startsWith("En sitio")) {
+            ultimaEtapa = 3;
+            ultimoEstado = "En sitio";
+          } else if (descripcion.startsWith("Saliendo a sitio")) {
+            ultimaEtapa = 2;
+            ultimoEstado = "Saliendo a sitio";
           }
         });
-        
-        // La etapa solo avanza aquí. El retroceso por cierre no confirmado lo
-        // resuelve la detección de más abajo.
-        if (ultimaEtapa > etapaEfectiva) {
+
+        // La etapa guardada en el dispositivo solo se supera hacia adelante. La
+        // excepción es una nota de pendiente más reciente que ese guardado: ahí el
+        // reinicio sí debe aplicarse aunque la etapa guardada fuera mayor, o el
+        // técnico no podría volver a registrar la visita.
+        if (ultimaEtapa > etapaEfectiva || fechaUltimoPendiente > etapaGuardadaEn) {
           etapaEfectiva = ultimaEtapa;
           setEtapaActual(ultimaEtapa);
           setEstadoActual(ultimoEstado);
+          setModoPendiente(false);
           await guardarProgreso(ultimaEtapa, ultimoEstado);
         }
       }
@@ -400,6 +458,10 @@ const DetalleTickets = () => {
       // Actualizar la etapa actual para habilitar el siguiente botón
       const nuevaEtapa = etapa + 1;
       setEtapaActual(nuevaEtapa);
+      // El flujo vuelve por la vía normal: se sale del modo pendiente para que el
+      // formulario no mezclara la nota con la resolución.
+      setModoPendiente(false);
+      setNotaPendiente('');
       
       // Guardar el progreso en AsyncStorage
       await guardarProgreso(nuevaEtapa, nuevoEstado);
@@ -541,9 +603,10 @@ const DetalleTickets = () => {
             motivoFallo = 'no se encontró el incidente';
             console.error(motivoFallo);
           }
-        } catch (updateError) {
-          motivoFallo = 'Helix no respondió al cerrar el incidente';
-          console.error("Error al actualizar estado del incidente:", updateError);
+        } catch (updateError: any) {
+          const detalle = mensajeErrorHelix(updateError);
+          motivoFallo = `Helix rechazó el cierre del incidente (${detalle})`;
+          console.error("Error al actualizar estado del incidente:", updateError?.response?.data || updateError);
         }
       } else {
         // Si es una orden de trabajo, actualizar su estado a Completed
@@ -574,7 +637,14 @@ const DetalleTickets = () => {
                 data: JSON.stringify({
                   "values": {
                     "Status": "Completed",
-                    "chr_Resolution": resolucion
+                    "chr_Resolution": resolucion,
+                    // El motivo de estado se envía vacío a propósito. Si la orden
+                    // quedó antes en Pending con un motivo, ese motivo no está
+                    // asociado a Completed y Helix rechaza el cierre con 500
+                    // ("Status is not associated with the status reason"). Vacío
+                    // queda la combinación Completed sin motivo, que es la que
+                    // usan las órdenes cerradas por la app.
+                    "Status Reason": ""
                   }
                 }),
                 timeout: TIMEOUT_HELIX_MS,
@@ -590,9 +660,10 @@ const DetalleTickets = () => {
             motivoFallo = 'no se encontró la orden de trabajo';
             console.error(motivoFallo);
           }
-        } catch (updateError) {
-          motivoFallo = 'Helix no respondió al cerrar la orden de trabajo';
-          console.error("Error al actualizar estado de la orden de trabajo:", updateError);
+        } catch (updateError: any) {
+          const detalle = mensajeErrorHelix(updateError);
+          motivoFallo = `Helix rechazó el cierre de la orden de trabajo (${detalle})`;
+          console.error("Error al actualizar estado de la orden de trabajo:", updateError?.response?.data || updateError);
         }
       }
       
@@ -623,6 +694,187 @@ const DetalleTickets = () => {
       setLoading(false);
     }
   };
+
+  // Pasa el formulario a modo pendiente. No avanza la etapa: el técnico todavía
+  // puede cancelar y registrar el soporte como finalizado.
+  const cambiarModoPendiente = (activo: boolean) => {
+    if (activo) {
+      setNotaPendiente('');
+    }
+    setModoPendiente(activo);
+  };
+
+  // Registra la nota del pendiente: la escribe en la Actividad del caso, lo deja
+  // en estado Pending en Helix y reinicia el flujo para que el técnico pueda
+  // volver a registrar la visita.
+  const registrarPendiente = async () => {
+    if (notaPendiente.trim() === '') {
+      Alert.alert("Error", "Por favor ingrese la nota del pendiente");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      // Dentro del try por el mismo motivo que en cambiarEstado: un fallo al
+      // actualizar la ubicación no debe dejar la pantalla colgada ni impedir
+      // registrar la nota.
+      await actualizarUbicacionUsuario();
+
+      // Obtener token almacenado
+      const token = await AsyncStorage.getItem("token");
+
+      if (!token) {
+        Alert.alert("Error", "No se encontró información de sesión");
+        return;
+      }
+
+      const headersList = {
+        "Accept": "*/*",
+        "Authorization": `AR-JWT ${token}`,
+        "Content-Type": "application/json"
+      };
+
+      const descripcion = `${PREFIJO_PENDIENTE} ${notaPendiente.trim()}`;
+
+      let bodyContent;
+      let url;
+
+      if (params.type === "ticket") {
+        bodyContent = JSON.stringify({
+          "values": {
+            "Incident Number": params.incidentNumber,
+            "Work Log Type": "Customer Communication",
+            "Detailed Description": descripcion,
+            "Secure Work Log": "No",
+            "View Access": "Public"
+          }
+        });
+
+        url = `${page}/api/arsys/v1/entry/HPD:WorkLog`;
+      } else {
+        bodyContent = JSON.stringify({
+          "values": {
+            "Work Order ID": params.incidentNumber,
+            "Detailed Description": descripcion,
+            "Short Description": "Nota del pendiente",
+            "View Access": "Public"
+          }
+        });
+
+        url = `${page}/api/arsys/v1/entry/WOI:WorkInfo`;
+      }
+
+      await axios.request({
+        url: url,
+        method: "POST",
+        headers: headersList,
+        data: bodyContent,
+        timeout: TIMEOUT_HELIX_MS,
+      });
+
+      console.log("Respuesta API Nota del pendiente: registrada");
+
+      // El estado solo se cambia si la nota quedó escrita. Se actualiza al
+      // Pending sin tocar Resolution / chr_Resolution: el caso no se cerró, solo
+      // quedó pendiente de una nueva visita.
+      let estadoActualizado = false;
+      let motivoFallo = '';
+
+      try {
+        const esTicket = params.type === "ticket";
+        const form = esTicket ? "HPD:Help%20Desk" : "WOI:WorkOrder";
+        const campoQuery = esTicket ? "Incident Number" : "Work Order ID";
+        const campoId = esTicket ? "Entry ID" : "Request ID";
+        const query = `'${campoQuery}'="${params.incidentNumber}"`;
+
+        const casoResponse = await axios.request({
+          url: `${page}/api/arsys/v1/entry/${form}?q=${encodeURIComponent(query)}`,
+          method: "GET",
+          headers: headersList,
+          timeout: TIMEOUT_HELIX_MS,
+        });
+
+        const idCaso = casoResponse.data?.entries?.[0]?.values?.[campoId];
+
+        if (idCaso) {
+          const updateResponse = await axios.request({
+            url: `${page}/api/arsys/v1/entry/${form}/${idCaso}`,
+            method: "PUT",
+            headers: headersList,
+            data: JSON.stringify({
+              "values": {
+                "Status": ESTADO_PENDIENTE,
+                [CAMPO_MOTIVO_ESTADO[esTicket ? "ticket" : "workOrder"]]: MOTIVO_PENDIENTE
+              }
+            }),
+            timeout: TIMEOUT_HELIX_MS,
+          });
+
+          estadoActualizado = true;
+          console.log("Respuesta API Actualización Estado Pendiente:", JSON.stringify(updateResponse.data));
+        } else {
+          motivoFallo = esTicket
+            ? 'no se encontró el registro del incidente en Helix'
+            : 'no se encontró el identificador de la orden de trabajo';
+          console.error(motivoFallo);
+        }
+      } catch (updateError: any) {
+        const detalleHelix = mensajeErrorHelix(updateError);
+        console.error(
+          "Error al actualizar estado a pendiente:",
+          JSON.stringify(updateError?.response?.data) || updateError?.message || updateError
+        );
+        motivoFallo = `Helix rechazó el cambio de estado (${detalleHelix})`;
+      }
+
+      if (!estadoActualizado) {
+        // La nota quedó en la Actividad, pero el estado no se actualizó. Se
+        // conserva la etapa 3 para que el botón siga activo y el técnico pueda
+        // reintentar; reiniciar el flujo sin el estado en Pending dejaría el caso
+        // con la misma apariencia en la app y en la lista.
+        const detalle = motivoFallo || 'la actualización no se completó';
+        console.log(`Estado pendiente no confirmado (${detalle}). Se conserva la etapa 3 para reintentar.`);
+        Alert.alert(
+          "Estado no confirmado",
+          `La nota se guardó en la Actividad, pero el caso no quedó en estado pendiente: ${detalle}.\n\n` +
+          "El caso sigue como estaba en Remedy. Toca 'Registrar pendiente' para reintentar."
+        );
+        return;
+      }
+
+      // El flujo vuelve al inicio para que el técnico pueda registrar otra visita.
+      setModoPendiente(false);
+      setNotaPendiente('');
+      setEtapaActual(1);
+      setEstadoActual('Pendiente registrado');
+      await guardarProgreso(1, 'Pendiente registrado');
+
+      Alert.alert(
+        "Éxito",
+        "Nota del pendiente guardada. El caso quedó en estado pendiente.",
+        [{ text: "OK", onPress: () => router.back() }]
+      );
+    } catch (error) {
+      console.error("Error al registrar la nota del pendiente:", error);
+      Alert.alert("Error", "No se pudo registrar la nota del pendiente");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // El formulario aparece cuando el técnico ya decidió: al registrar el soporte
+  // como finalizado (paso 4) o al dejar el caso pendiente (modo pendiente, que se
+  // elige en el paso 3). En el paso 5 se mantiene visible, en solo lectura, para
+  // poder leer lo que se resolvió.
+  const mostrarFormulario = modoPendiente || etapaActual >= 4;
+
+  // El formulario se usa en dos momentos distintos: la resolución se escribe en
+  // el paso 4, pero la nota del pendiente se elige en el paso 3 sin avanzar el
+  // flujo, así que también tiene que ser editable ahí. El paso 4 manda siempre:
+  // si el técnico pulsa "Soporte finalizado" estando en modo pendiente, el
+  // formulario no puede quedar bloqueado.
+  const formularioEditable = etapaActual === 4 || (modoPendiente && etapaActual === 3);
 
   const handleBack = () => {
     router.back();
@@ -721,39 +973,83 @@ const DetalleTickets = () => {
           <Text style={[styles.botonTexto, etapaActual !== 2 ? styles.textoDeshabilitado : null]}>En sitio</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity 
-          style={[
-            styles.botonEstado, 
-            estadoActual === "Soporte finalizado" ? styles.botonActivo : null,
-            etapaActual !== 3 ? styles.botonDeshabilitado : null
-          ]} 
-          onPress={() => etapaActual === 3 ? cambiarEstado("Soporte finalizado", 3) : null}
-          disabled={etapaActual !== 3}
-        >
-          <Text style={[styles.botonTexto, etapaActual !== 3 ? styles.textoDeshabilitado : null]}>Soporte finalizado</Text>
-        </TouchableOpacity>
+        {/* "Soporte finalizado" y "Pendiente" compiten entre sí: registrar la
+            nota de pendiente no avanza la etapa, solo cambia el formulario que
+            se muestra abajo. */}
+        <View style={styles.botonesFila}>
+          <TouchableOpacity 
+            style={[
+              styles.botonEstado, 
+              styles.botonFila,
+              estadoActual === "Soporte finalizado" ? styles.botonActivo : null,
+              etapaActual !== 3 ? styles.botonDeshabilitado : null
+            ]} 
+            onPress={() => etapaActual === 3 ? cambiarEstado("Soporte finalizado", 3) : null}
+            disabled={etapaActual !== 3}
+          >
+            <Text style={[styles.botonTexto, etapaActual !== 3 ? styles.textoDeshabilitado : null]}>Soporte finalizado</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[
+              styles.botonEstado,
+              styles.botonFila,
+              styles.botonPendiente,
+              modoPendiente ? styles.botonPendienteActivo : null,
+              etapaActual !== 3 ? styles.botonDeshabilitado : null
+            ]} 
+            onPress={() => etapaActual === 3 ? cambiarModoPendiente(true) : null}
+            disabled={etapaActual !== 3}
+          >
+            <Text style={[styles.botonTexto, styles.textoBotonPendiente, etapaActual !== 3 ? styles.textoDeshabilitado : null]}>Pendiente</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       
-      <View style={styles.resolucionContainer}>
-        <Text style={styles.resolucionLabel}>Resolución:</Text>
-        <TextInput
-          style={[styles.resolucionInput, etapaActual !== 4 ? styles.inputDeshabilitado : null]}
-          multiline
-          numberOfLines={8}
-          placeholder="Ingrese la resolución del caso..."
-          value={resolucion}
-          onChangeText={setResolucion}
-          editable={etapaActual === 4}
-        />
-        
-        <TouchableOpacity 
-          style={[styles.guardarButton, etapaActual !== 4 ? styles.botonDeshabilitado : null]} 
-          onPress={guardarResolucion}
-          disabled={etapaActual !== 4}
-        >
-          <Text style={[styles.guardarButtonText, etapaActual !== 4 ? styles.textoDeshabilitadoGuardar : null]}>Guardar resolución</Text>
-        </TouchableOpacity>
-      </View>
+      {/* El formulario no aparece hasta que el técnico decide qué hacer con el
+          caso: registrar el soporte como finalizado o dejarlo pendiente. En el
+          paso 5 se sigue viendo, ya en solo lectura, para que se lea lo que
+          se resolvió. */}
+      {mostrarFormulario && (
+        <View style={styles.resolucionContainer}>
+          <Text style={styles.resolucionLabel}>
+            {modoPendiente ? "Nota del pendiente:" : "Resolución:"}
+          </Text>
+          <TextInput
+            style={[styles.resolucionInput, !formularioEditable ? styles.inputDeshabilitado : null]}
+            multiline
+            numberOfLines={8}
+            placeholder={modoPendiente ? "Ingrese la nota del pendiente..." : "Ingrese la resolución del caso..."}
+            value={modoPendiente ? notaPendiente : resolucion}
+            onChangeText={modoPendiente ? setNotaPendiente : setResolucion}
+            editable={formularioEditable}
+          />
+
+          {modoPendiente && (
+            <TouchableOpacity
+              style={[styles.cancelarButton, !formularioEditable ? styles.botonDeshabilitado : null]}
+              onPress={() => cambiarModoPendiente(false)}
+              disabled={!formularioEditable}
+            >
+              <Text style={[styles.cancelarButtonText, !formularioEditable ? styles.textoDeshabilitado : null]}>Cancelar</Text>
+            </TouchableOpacity>
+          )}
+          
+          <TouchableOpacity 
+            style={[
+              styles.guardarButton,
+              modoPendiente ? styles.guardarPendiente : null,
+              !formularioEditable ? styles.botonDeshabilitado : null
+            ]} 
+            onPress={modoPendiente ? registrarPendiente : guardarResolucion}
+            disabled={!formularioEditable}
+          >
+            <Text style={[styles.guardarButtonText, !formularioEditable ? styles.textoDeshabilitadoGuardar : null]}>
+              {modoPendiente ? "Registrar pendiente" : "Guardar resolución"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </ScrollView>
   )
 }
@@ -902,6 +1198,26 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
+  botonesFila: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  botonFila: {
+    flex: 1,
+  },
+  // Ámbar siempre: el texto va en blanco y sobre el gris del resto de botones
+  // no se leería. El contorno marca que el formulario está en modo pendiente.
+  botonPendiente: {
+    backgroundColor: '#ef6c00',
+  },
+  botonPendienteActivo: {
+    backgroundColor: '#e65100',
+    borderWidth: 2,
+    borderColor: '#bf360c',
+  },
+  textoBotonPendiente: {
+    color: '#fff',
+  },
   botonEstado: {
     backgroundColor: '#e0e0e0',
     padding: 12,
@@ -948,12 +1264,27 @@ const styles = StyleSheet.create({
     minHeight: 150,
     fontSize: 16,
   },
+  cancelarButton: {
+    backgroundColor: '#e0e0e0',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  cancelarButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+  },
   guardarButton: {
     backgroundColor: '#4caf50',
     padding: 16,
     borderRadius: 8,
     alignItems: 'center',
     marginTop: 16,
+  },
+  guardarPendiente: {
+    backgroundColor: '#ef6c00',
   },
   guardarButtonText: {
     color: '#fff',
